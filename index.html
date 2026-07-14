@@ -1497,12 +1497,13 @@ function applyLoadedData(data) {
   document.getElementById("g-src").textContent = "구글시트 연동됨" + (data.meta && data.meta.updatedAt ? " · " + new Date(data.meta.updatedAt).toLocaleString("ko-KR") : "");
 }
 async function pushRaw(payload) {
-  if (!endpointReady()) { gToast("⚠️ 시트 연동 미설정 — 화면에만 반영됨"); return; }
+  if (!endpointReady()) { gToast("⚠️ 시트 연동 미설정 — 화면에만 반영됨"); return false; }
   try {
     const res = await fetch(SHEETS_ENDPOINT, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(Object.assign({ type: "raw_upload", token: WRITE_TOKEN }, payload)) });
     const data = await res.json();
-    if (data.ok) gToast("✅ 구글시트 반영 완료"); else gToast("⚠️ 시트 반영 실패: " + (data.error || "알수없음"));
-  } catch (err) { gToast("⚠️ 시트 연동 실패(네트워크) — 화면에는 반영됨"); }
+    if (data.ok) { gToast("✅ 구글시트 반영 완료"); return true; }
+    gToast("⚠️ 시트 반영 실패: " + (data.error || "알수없음")); return false;
+  } catch (err) { gToast("⚠️ 시트 연동 실패(네트워크) — 화면에는 반영됨"); return false; }
 }
 let _pushStateTimer = null;
 function persistAndPush() {
@@ -1578,7 +1579,9 @@ async function onFiles(fileList) {
   applyBatch(batch);
   const list = document.getElementById("uploadList"); if (list) list.innerHTML = msgs.map(m => `<div>${escH(m)}</div>`).join("");
   gToast(msgs.join(" · ") || "처리할 파일이 없습니다");
-  pushRaw(batch);
+  const pushed = await pushRaw(batch);
+  // 서버(시트)에 정상 반영됐다면, 방금 올린 파일분만 남지 않도록 시트에 누적된 전체 데이터를 다시 불러와 화면을 맞춘다.
+  if (pushed) jsonpLoad(true);
 }
 function setupDropzone() {
   const dz = document.getElementById("dropzone"); if (!dz) return;
