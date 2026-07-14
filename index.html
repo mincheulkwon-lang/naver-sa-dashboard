@@ -1474,7 +1474,7 @@ function jsonpLoad(manual) {
     if (done) return; delete window[cbName]; script.remove();
     gToast("⚠️ 데이터 연결 실패 — 잠시 후 새로고침 해주세요"); document.getElementById("g-src").textContent = "연결 실패";
     showEmptyState();
-  }, 15000);
+  }, 45000);
   script.onerror = function () { if (done) return; clearTimeout(timer); delete window[cbName]; gToast("⚠️ 데이터 연결 실패"); document.getElementById("g-src").textContent = "연결 실패"; showEmptyState(); };
   script.src = SHEETS_ENDPOINT + (SHEETS_ENDPOINT.includes("?") ? "&" : "?") + "callback=" + cbName;
   document.body.appendChild(script);
