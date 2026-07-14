@@ -310,7 +310,7 @@ footer{padding:26px;color:var(--faint);font-size:11px;text-align:center;border-t
     <div class="gnb-right">
       <button class="gear" onclick="window.print()" title="인쇄 / PDF 저장">🖨</button>
       <button class="gear" onclick="openSettings()" title="설정">⚙</button>
-      <button class="gear" onclick="jsonpLoad(true)" title="새로고침">🔃</button>
+      <button class="gear" onclick="refreshLoadedRange()" title="새로고침">🔃</button>
       <div class="live"><span class="pulse"></span><span id="g-src">연결 중…</span></div>
     </div>
   </nav>
@@ -630,36 +630,53 @@ const todayISO = () => localISO(new Date());
    날짜/범위
    ========================================================================= */
 const inR = d => d >= STATE.frm && d <= STATE.to;
-function setRange(f, t) { if (f) STATE.frm = f; if (t) STATE.to = t; clampRange(); syncRangeInputs(); syncHeader(); renderActive(); }
+// 시트에 누적된 전체 기간을 매번 다 내려받으면 응답이 느려지므로, 기본은 최근 N일만 불러온다.
+// 그보다 이전 기간이 필요해지면(전체/지난달 등) ensureRangeLoaded가 그때 추가로 넓혀 불러온다.
+const DEFAULT_LOAD_DAYS = 45;
+function rangeBounds() { return [DB.meta.dataFrm || DB.meta.frm, DB.meta.dataTo || DB.meta.to]; }
+function ensureRangeLoaded(afterFn) {
+  const [dataFrm] = rangeBounds();
+  if (STATE.frm && STATE.loadedFrm && STATE.frm >= STATE.loadedFrm) { afterFn(); return; }
+  const wantFrm = (STATE.frm && (!dataFrm || STATE.frm >= dataFrm)) ? STATE.frm : dataFrm;
+  gToast("⏳ 이전 기간 데이터를 더 불러오는 중… (다소 시간이 걸릴 수 있습니다)");
+  jsonpLoad(false, wantFrm, STATE.loadedTo || todayISO(), afterFn);
+}
+function setRange(f, t) { if (f) STATE.frm = f; if (t) STATE.to = t; ensureRangeLoaded(() => { clampRange(); syncRangeInputs(); syncHeader(); renderActive(); }); }
 function clampRange() {
-  if (!DB.meta.frm) return;
-  if (STATE.frm < DB.meta.frm) STATE.frm = DB.meta.frm;
-  if (STATE.to > DB.meta.to) STATE.to = DB.meta.to;
+  const [frmBound, toBound] = rangeBounds();
+  if (!frmBound) return;
+  if (STATE.frm < frmBound) STATE.frm = frmBound;
+  if (STATE.to > toBound) STATE.to = toBound;
   if (STATE.frm > STATE.to) STATE.frm = STATE.to;
 }
 function presetRange(p) {
   document.querySelectorAll(".dr-preset").forEach(b => b.classList.remove("on"));
-  if (!DB.meta.frm) return;
-  if (p === "all") { STATE.frm = DB.meta.frm; STATE.to = DB.meta.to; }
-  else if (p === "yesterday") { const y = addDaysS(DB.meta.to, -1); STATE.frm = y; STATE.to = y; }
-  else if (p === "thisMonth") { STATE.frm = DB.meta.to.slice(0, 7) + "-01"; STATE.to = DB.meta.to; }
+  const [dataFrm, dataTo] = rangeBounds();
+  if (!dataFrm) return;
+  if (p === "all") { STATE.frm = dataFrm; STATE.to = dataTo; }
+  else if (p === "yesterday") { const y = addDaysS(dataTo, -1); STATE.frm = y; STATE.to = y; }
+  else if (p === "thisMonth") { STATE.frm = dataTo.slice(0, 7) + "-01"; STATE.to = dataTo; }
   else if (p === "lastMonth") {
-    const [y, m] = DB.meta.to.split("-").map(Number);
+    const [y, m] = dataTo.split("-").map(Number);
     const d = new Date(y, m - 2, 1); const ly = d.getFullYear(), lm = d.getMonth();
     const lastDay = new Date(ly, lm + 1, 0).getDate();
     STATE.frm = `${ly}-${String(lm + 1).padStart(2, "0")}-01`;
     STATE.to = `${ly}-${String(lm + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
   }
-  else { STATE.to = DB.meta.to; const days = DB.meta.days; STATE.frm = days[Math.max(0, days.length - p)]; }
-  clampRange();
-  const b = document.getElementById("dp-" + p); if (b) b.classList.add("on");
-  syncRangeInputs(); syncHeader(); renderActive();
+  else { STATE.to = dataTo; STATE.frm = addDaysS(dataTo, -(p - 1)); }
+  const finish = () => {
+    clampRange();
+    const b = document.getElementById("dp-" + p); if (b) b.classList.add("on");
+    syncRangeInputs(); syncHeader(); renderActive();
+  };
+  ensureRangeLoaded(finish);
 }
 function syncRangeInputs() {
   const a = document.getElementById("g-from"), b = document.getElementById("g-to");
-  if (!DB.meta.frm) return;
-  if (a) { a.value = STATE.frm; a.min = DB.meta.frm; a.max = DB.meta.to; }
-  if (b) { b.value = STATE.to; b.min = DB.meta.frm; b.max = DB.meta.to; }
+  const [frmBound, toBound] = rangeBounds();
+  if (!frmBound) return;
+  if (a) { a.value = STATE.frm; a.min = frmBound; a.max = toBound; }
+  if (b) { b.value = STATE.to; b.min = frmBound; b.max = toBound; }
 }
 function syncHeader() {
   if (!DB.meta.frm) { document.getElementById("g-period").textContent = "데이터 없음"; return; }
@@ -1022,7 +1039,7 @@ function renderChartType() {
 function showEmptyState() {
   ["hero", "kpis"].forEach(id => { const el = document.getElementById(id); if (el) el.innerHTML = ""; });
   const el = document.getElementById("rail");
-  if (el) el.innerHTML = `<div class="box empty-state"><span class="ic">📭</span><b>아직 데이터가 없습니다</b>구글시트 연동을 확인하거나, 우리(에이전시) 모드로 전환해 raw 파일을 업로드해주세요.</div>`;
+  if (el) el.innerHTML = `<div class="box empty-state"><span class="ic">📭</span><b>아직 데이터가 없습니다</b>구글시트 연동을 확인하거나, raw 파일을 업로드해주세요.</div>`;
 }
 
 /* =========================================================================
@@ -1460,7 +1477,7 @@ function loadLocalOnly() { try { const r = localStorage.getItem(LS_KEY); if (!r)
    ========================================================================= */
 function endpointReady() { return SHEETS_ENDPOINT && SHEETS_ENDPOINT.indexOf("REPLACE") < 0; }
 function coerceNumericRow(r) { ["imp", "clk", "cost", "conv", "convRevenue", "avgRank"].forEach(k => { if (r[k] !== undefined) r[k] = Number(r[k]) || 0; }); return r; }
-function jsonpLoad(manual) {
+function jsonpLoad(manual, frm, to, onDone) {
   if (!endpointReady()) { document.getElementById("g-src").textContent = "시트 연동 미설정"; showEmptyState(); return; }
   if (manual) gToast("🔃 새로고침 중…");
   const cbName = "__sheetCb" + Math.floor(Math.random() * 1e9);
@@ -1468,18 +1485,23 @@ function jsonpLoad(manual) {
   let done = false;
   window[cbName] = function (data) {
     done = true; clearTimeout(timer); delete window[cbName]; script.remove();
-    applyLoadedData(data);
+    applyLoadedData(data, frm, to);
+    if (onDone) onDone();
   };
   const timer = setTimeout(() => {
     if (done) return; delete window[cbName]; script.remove();
     gToast("⚠️ 데이터 연결 실패 — 잠시 후 새로고침 해주세요"); document.getElementById("g-src").textContent = "연결 실패";
-    showEmptyState();
+    if (!STATE.loadedFrm) showEmptyState();
   }, 45000);
-  script.onerror = function () { if (done) return; clearTimeout(timer); delete window[cbName]; gToast("⚠️ 데이터 연결 실패"); document.getElementById("g-src").textContent = "연결 실패"; showEmptyState(); };
-  script.src = SHEETS_ENDPOINT + (SHEETS_ENDPOINT.includes("?") ? "&" : "?") + "callback=" + cbName;
+  script.onerror = function () { if (done) return; clearTimeout(timer); delete window[cbName]; gToast("⚠️ 데이터 연결 실패"); document.getElementById("g-src").textContent = "연결 실패"; if (!STATE.loadedFrm) showEmptyState(); };
+  let src = SHEETS_ENDPOINT + (SHEETS_ENDPOINT.includes("?") ? "&" : "?") + "callback=" + cbName;
+  if (frm) src += "&frm=" + encodeURIComponent(frm);
+  if (to) src += "&to=" + encodeURIComponent(to);
+  script.src = src;
   document.body.appendChild(script);
 }
-function applyLoadedData(data) {
+function applyLoadedData(data, frm, to) {
+  const firstLoad = !STATE.loadedFrm;
   DB.rawByType.daily = (data.daily || []).map(coerceNumericRow);
   DB.rawByType.gender = (data.gender || []).map(coerceNumericRow);
   DB.rawByType.age = (data.age || []).map(coerceNumericRow);
@@ -1490,11 +1512,25 @@ function applyLoadedData(data) {
   DB.indexMapRaw = data.indexMap || [];
   DB.indexByKey = buildIndexByKey(DB.indexMapRaw);
   DB.brandContractsRaw = (data.brandContracts || []).map(c => Object.assign({}, c, { amount: Number(c.amount) || 0, dailyRate: Number(c.dailyRate) || 0 }));
+  // dataFrm/dataTo = 시트에 실제로 존재하는 전체 기간(요청한 frm/to로 잘리지 않은 진짜 범위).
+  // "전체" 프리셋·날짜피커의 min/max는 이 값을 기준으로 하고, 화면에 실제로 올라온 rawByType은 요청 범위만 담는다.
+  DB.meta.dataFrm = (data.meta && data.meta.dataFrm) || frm || DB.meta.dataFrm;
+  DB.meta.dataTo = (data.meta && data.meta.dataTo) || to || DB.meta.dataTo;
+  STATE.loadedFrm = frm || DB.meta.dataFrm;
+  STATE.loadedTo = to || DB.meta.dataTo;
   reenrichAll(); recomputeMetaRange();
   if (data.guides && data.guides.length) STATE.guides = data.guides;
-  presetRange("all");
+  if (firstLoad) { STATE.frm = STATE.loadedFrm; STATE.to = STATE.loadedTo; }
+  clampRange(); syncRangeInputs(); syncHeader();
   renderTabs(); renderActive();
   document.getElementById("g-src").textContent = "구글시트 연동됨" + (data.meta && data.meta.updatedAt ? " · " + new Date(data.meta.updatedAt).toLocaleString("ko-KR") : "");
+}
+function refreshLoadedRange(extraFrm, extraTo) {
+  let frm = STATE.loadedFrm || addDaysS(todayISO(), -DEFAULT_LOAD_DAYS);
+  let to = STATE.loadedTo || todayISO();
+  if (extraFrm && extraFrm < frm) frm = extraFrm;
+  if (extraTo && extraTo > to) to = extraTo;
+  jsonpLoad(true, frm, to);
 }
 async function pushRaw(payload) {
   if (!endpointReady()) { gToast("⚠️ 시트 연동 미설정 — 화면에만 반영됨"); return false; }
@@ -1580,8 +1616,13 @@ async function onFiles(fileList) {
   const list = document.getElementById("uploadList"); if (list) list.innerHTML = msgs.map(m => `<div>${escH(m)}</div>`).join("");
   gToast(msgs.join(" · ") || "처리할 파일이 없습니다");
   const pushed = await pushRaw(batch);
-  // 서버(시트)에 정상 반영됐다면, 방금 올린 파일분만 남지 않도록 시트에 누적된 전체 데이터를 다시 불러와 화면을 맞춘다.
-  if (pushed) jsonpLoad(true);
+  // 서버(시트)에 정상 반영됐다면, 방금 올린 파일분만 남지 않도록 지금까지 불러온 범위(+이번에 올린 기간)를
+  // 시트에서 다시 불러와 화면을 맞춘다. 매번 "전체 기간"을 통째로 다시 불러오면 응답이 느려지므로 그렇게는 하지 않는다.
+  if (pushed) {
+    let bFrm = periods.DAILY ? periods.DAILY.frm : null, bTo = periods.DAILY ? periods.DAILY.to : null;
+    if (!bFrm && batch.daily && batch.daily.length) { const ds = batch.daily.map(r => r.d).filter(Boolean).sort(); bFrm = ds[0]; bTo = ds[ds.length - 1]; }
+    refreshLoadedRange(bFrm, bTo);
+  }
 }
 function setupDropzone() {
   const dz = document.getElementById("dropzone"); if (!dz) return;
@@ -1596,7 +1637,14 @@ function setupDropzone() {
 loadLocalOnly();
 renderTabs();
 setupDropzone();
-jsonpLoad();
+// 업로드 영역은 URL에 ?agency=1 이 붙은 링크로 접속했을 때만 보인다. 광고주에게는 이 파라미터가 없는
+// 기본 링크를 공유하면 되고, 에이전시는 즐겨찾기에 ?agency=1이 붙은 링크를 저장해 두고 쓰면 된다.
+(function () {
+  const isAgency = new URLSearchParams(location.search).get("agency") === "1";
+  const panel = document.getElementById("agencyUploadPanel");
+  if (panel && !isAgency) panel.style.display = "none";
+})();
+jsonpLoad(false, addDaysS(todayISO(), -DEFAULT_LOAD_DAYS), todayISO());
 </script>
 </body>
 </html>
