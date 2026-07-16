@@ -1477,6 +1477,14 @@ function loadLocalOnly() { try { const r = localStorage.getItem(LS_KEY); if (!r)
    ========================================================================= */
 function endpointReady() { return SHEETS_ENDPOINT && SHEETS_ENDPOINT.indexOf("REPLACE") < 0; }
 function coerceNumericRow(r) { ["imp", "clk", "cost", "conv", "convRevenue", "avgRank"].forEach(k => { if (r[k] !== undefined) r[k] = Number(r[k]) || 0; }); return r; }
+/* 서버가 페이로드 절감을 위해 {h:[헤더], r:[[행값],...]} "압축 포맷"으로 보낸다(31MB→절반 이하).
+   과거 포맷(객체 배열)도 그대로 수용해 배포 시점 차이로 인한 호환 문제를 막는다. */
+function expandTable(t) {
+  if (!t) return [];
+  if (Array.isArray(t)) return t;
+  const h = t.h || [], rows = t.r || [];
+  return rows.map(row => { const o = {}; h.forEach((k, i) => { o[k] = row[i]; }); return o; });
+}
 function jsonpLoad(manual, frm, to, onDone) {
   if (!endpointReady()) { document.getElementById("g-src").textContent = "시트 연동 미설정"; showEmptyState(); return; }
   if (manual) gToast("🔃 새로고침 중…");
@@ -1488,11 +1496,12 @@ function jsonpLoad(manual, frm, to, onDone) {
     applyLoadedData(data, frm, to);
     if (onDone) onDone();
   };
+  // 45일치 데이터 응답이 수십 초 걸릴 수 있어(서버 읽기 ~20초 + 대용량 다운로드) 여유 있게 잡는다.
   const timer = setTimeout(() => {
     if (done) return; delete window[cbName]; script.remove();
     gToast("⚠️ 데이터 연결 실패 — 잠시 후 새로고침 해주세요"); document.getElementById("g-src").textContent = "연결 실패";
     if (!STATE.loadedFrm) showEmptyState();
-  }, 45000);
+  }, 120000);
   script.onerror = function () { if (done) return; clearTimeout(timer); delete window[cbName]; gToast("⚠️ 데이터 연결 실패"); document.getElementById("g-src").textContent = "연결 실패"; if (!STATE.loadedFrm) showEmptyState(); };
   let src = SHEETS_ENDPOINT + (SHEETS_ENDPOINT.includes("?") ? "&" : "?") + "callback=" + cbName;
   if (frm) src += "&frm=" + encodeURIComponent(frm);
@@ -1502,13 +1511,13 @@ function jsonpLoad(manual, frm, to, onDone) {
 }
 function applyLoadedData(data, frm, to) {
   const firstLoad = !STATE.loadedFrm;
-  DB.rawByType.daily = (data.daily || []).map(coerceNumericRow);
-  DB.rawByType.gender = (data.gender || []).map(coerceNumericRow);
-  DB.rawByType.age = (data.age || []).map(coerceNumericRow);
-  DB.rawByType.keyword = (data.keyword || []).map(coerceNumericRow);
-  DB.rawByType.adMaterial = (data.adMaterial || []).map(coerceNumericRow);
-  DB.rawByType.shoppingQuery = (data.shoppingQuery || []).map(coerceNumericRow);
-  DB.rawByType.placement = (data.placement || []).map(coerceNumericRow);
+  DB.rawByType.daily = expandTable(data.daily).map(coerceNumericRow);
+  DB.rawByType.gender = expandTable(data.gender).map(coerceNumericRow);
+  DB.rawByType.age = expandTable(data.age).map(coerceNumericRow);
+  DB.rawByType.keyword = expandTable(data.keyword).map(coerceNumericRow);
+  DB.rawByType.adMaterial = expandTable(data.adMaterial).map(coerceNumericRow);
+  DB.rawByType.shoppingQuery = expandTable(data.shoppingQuery).map(coerceNumericRow);
+  DB.rawByType.placement = expandTable(data.placement).map(coerceNumericRow);
   DB.indexMapRaw = data.indexMap || [];
   DB.indexByKey = buildIndexByKey(DB.indexMapRaw);
   DB.brandContractsRaw = (data.brandContracts || []).map(c => Object.assign({}, c, { amount: Number(c.amount) || 0, dailyRate: Number(c.dailyRate) || 0 }));
