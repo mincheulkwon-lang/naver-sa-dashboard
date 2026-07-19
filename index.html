@@ -782,18 +782,37 @@ function enrich(rows, idxMap, applyBrand) {
     return applyBrand ? applyBrandContractCost(out) : out;
   });
 }
+// 성별·연령·지면은 화면에서 (성별/연령대/매체)로만 합산해 보여주고 광고그룹 단위를 쓰지 않는다.
+// 그래서 업로드 직전에 (날짜×캠페인유형×브랜드×차원)으로 미리 합쳐 저장한다 — raw 대비 90%+ 감소하며
+// 화면 숫자는 동일하다. 브랜드는 인덱스(campaign|adgroup→brand)로 매핑, avgRank는 노출 가중평균으로 합산.
+function aggregateToBrand(rows, dimField, idxByKey) {
+  const m = {};
+  (rows || []).forEach(r => {
+    const j = idxByKey ? idxByKey[r.campaign + "|" + r.adgroup] : null;
+    const brand = (j && j.brand) ? j.brand : "미분류";
+    const dim = r[dimField] !== undefined && r[dimField] !== null ? r[dimField] : "";
+    const key = r.d + "|" + r.campaignType + "|" + brand + "|" + dim;
+    let o = m[key];
+    if (!o) { o = { d: r.d, campaignType: r.campaignType, brand, imp: 0, clk: 0, cost: 0, conv: 0, convRevenue: 0, _rw: 0, _ri: 0 }; o[dimField] = dim; m[key] = o; }
+    const imp = +r.imp || 0;
+    o.imp += imp; o.clk += +r.clk || 0; o.cost += +r.cost || 0; o.conv += +r.conv || 0; o.convRevenue += +r.convRevenue || 0;
+    o._rw += (+r.avgRank || 0) * imp; o._ri += imp;
+  });
+  return Object.values(m).map(o => { o.avgRank = o._ri > 0 ? o._rw / o._ri : 0; delete o._rw; delete o._ri; return o; });
+}
 function reenrichAll() {
   DB.brandContractsByAdgroup = buildBrandContractsByAdgroup(DB.brandContractsRaw);
   // 계약 단가 적용은 DAILY(및 그로부터 파생되는 개요·캠페인/광고그룹 탭)에만 반영한다.
-  // 키워드·상품성과·지면별은 브랜드검색이 하루에 여러 행(소재·지면)으로 쪼개져 있어, 같은 일할 금액을
+  // 키워드·상품성과는 브랜드검색이 하루에 여러 행(소재)으로 쪼개져 있어, 같은 일할 금액을
   // 행마다 그대로 넣으면 합계가 중복 계산되므로 원본(raw=0) 그대로 둔다.
   DB.daily = enrich(DB.rawByType.daily || [], DB.indexByKey, true);
-  DB.gender = enrich(DB.rawByType.gender || [], DB.indexByKey, false);
-  DB.age = enrich(DB.rawByType.age || [], DB.indexByKey, false);
   DB.keyword = enrich(DB.rawByType.keyword || [], DB.indexByKey, false);
   DB.adMaterial = enrich(DB.rawByType.adMaterial || [], DB.indexByKey, false);
   DB.shoppingQuery = enrich(DB.rawByType.shoppingQuery || [], DB.indexByKey, false);
-  DB.placement = enrich(DB.rawByType.placement || [], DB.indexByKey, false);
+  // 성별·연령·지면은 이미 브랜드 단위로 집계돼 brand 필드를 갖고 있으므로 enrich(광고그룹 조인)를 건너뛴다.
+  DB.gender = DB.rawByType.gender || [];
+  DB.age = DB.rawByType.age || [];
+  DB.placement = DB.rawByType.placement || [];
   // 브랜드 필터 목록은 인덱스에 정의된 전체 브랜드 기준으로 만든다 (DAILY 행 유무로만 만들면,
   // 해당 기간에 노출·활동이 없어 raw에 아예 안 잡힌 브랜드가 필터에서 통째로 사라지는 문제가 있었음).
   const brandSet = new Set();
@@ -1621,6 +1640,12 @@ async function onFiles(fileList) {
     Object.keys(periods).forEach(k => { if (k === "DAILY") return; const p = periods[k]; if (p.frm !== periods.DAILY.frm || p.to !== periods.DAILY.to) msgs.push(`⚠️ ${k} 파일은 다른 기간(${p.frm}~${p.to})입니다`); });
   }
   if (mediaMismatch) msgs.push("⚠️ 다른 광고계정(매체번호) 파일이 섞여 있을 수 있습니다");
+  // 성별·연령·지면은 브랜드 단위로 집계해서 저장한다(용량 90%+ 절감, 화면 숫자 동일).
+  // 브랜드 매핑은 이번 배치의 인덱스가 있으면 그걸, 없으면 이미 로드된 인덱스를 쓴다.
+  const _idxByKey = batch.indexMap ? buildIndexByKey(batch.indexMap) : DB.indexByKey;
+  if (batch.gender) { const n0 = batch.gender.length; batch.gender = aggregateToBrand(batch.gender, "gender", _idxByKey); msgs.push(`↳ 성별 브랜드집계 ${n0.toLocaleString()}→${batch.gender.length.toLocaleString()}행`); }
+  if (batch.age) { const n0 = batch.age.length; batch.age = aggregateToBrand(batch.age, "ageBand", _idxByKey); msgs.push(`↳ 연령 브랜드집계 ${n0.toLocaleString()}→${batch.age.length.toLocaleString()}행`); }
+  if (batch.placement) { const n0 = batch.placement.length; batch.placement = aggregateToBrand(batch.placement, "media", _idxByKey); msgs.push(`↳ 지면 브랜드집계 ${n0.toLocaleString()}→${batch.placement.length.toLocaleString()}행`); }
   applyBatch(batch);
   const list = document.getElementById("uploadList"); if (list) list.innerHTML = msgs.map(m => `<div>${escH(m)}</div>`).join("");
   gToast(msgs.join(" · ") || "처리할 파일이 없습니다");
