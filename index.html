@@ -310,6 +310,7 @@ footer{padding:26px;color:var(--faint);font-size:11px;text-align:center;border-t
     <div class="gnb-right">
       <button class="gear" onclick="window.print()" title="인쇄 / PDF 저장">🖨</button>
       <button class="gear" onclick="refreshLoadedRange()" title="새로고침">🔃</button>
+      <button class="gear" onclick="logout()" title="로그아웃">⏻</button>
       <div class="live"><span class="pulse"></span><span id="g-src">연결 중…</span></div>
     </div>
   </nav>
@@ -526,6 +527,25 @@ footer{padding:26px;color:var(--faint);font-size:11px;text-align:center;border-t
     </div>
   </div>
   <footer id="foot">NAVER SA ADS HUB · 아모레헤어앤뷰티(2061142) · 모든 금액 부가세 별도</footer>
+</div>
+
+<!-- 로그인 게이트 (허용 이메일 일회용 코드) -->
+<div id="loginOv" style="position:fixed;inset:0;z-index:9999;background:#f4f6f8;display:flex;align-items:center;justify-content:center;padding:16px">
+  <div style="width:360px;max-width:92vw;background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:28px 26px;box-shadow:0 10px 40px rgba(0,0,0,.08)">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="width:26px;height:26px;background:#03C75A;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:14px">N</span><b style="font-size:15px">네이버 SA 광고 대시보드</b></div>
+    <div style="color:#6b7280;font-size:12.5px;margin-bottom:18px">허용된 이메일로 로그인해 주세요.</div>
+    <div id="loginStep1">
+      <input id="loginEmail" type="email" placeholder="이메일 주소" onkeydown="if(event.key==='Enter')submitEmail()" style="width:100%;box-sizing:border-box;padding:11px 12px;border:1px solid #d1d5db;border-radius:9px;font-size:13.5px;margin-bottom:10px;outline:none">
+      <button id="loginEmailBtn" onclick="submitEmail()" style="width:100%;padding:11px;background:#03C75A;color:#fff;border:none;border-radius:9px;font-size:13.5px;font-weight:700;cursor:pointer">인증코드 받기</button>
+    </div>
+    <div id="loginStep2" style="display:none">
+      <div style="color:#374151;font-size:12.5px;margin-bottom:10px"><b id="loginEmailShow"></b> 로 보낸 6자리 코드를 입력하세요.</div>
+      <input id="loginCode" type="text" inputmode="numeric" maxlength="6" placeholder="000000" onkeydown="if(event.key==='Enter')submitCode()" style="width:100%;box-sizing:border-box;padding:11px 12px;border:1px solid #d1d5db;border-radius:9px;font-size:18px;letter-spacing:5px;text-align:center;margin-bottom:10px;outline:none">
+      <button id="loginCodeBtn" onclick="submitCode()" style="width:100%;padding:11px;background:#03C75A;color:#fff;border:none;border-radius:9px;font-size:13.5px;font-weight:700;cursor:pointer">로그인</button>
+      <button onclick="loginBackToEmail()" style="width:100%;padding:9px;background:none;color:#6b7280;border:none;font-size:12px;cursor:pointer;margin-top:6px">← 이메일 다시 입력 / 코드 재전송</button>
+    </div>
+    <div id="loginMsg" style="color:#dc2626;font-size:12px;margin-top:10px;min-height:16px"></div>
+  </div>
 </div>
 
 <div id="setOverlay" class="modal-ov" onclick="if(event.target===this)closeSettings()">
@@ -1509,6 +1529,7 @@ function jsonpLoad(manual, frm, to, onDone) {
   let done = false;
   window[cbName] = function (data) {
     done = true; clearTimeout(timer); delete window[cbName]; script.remove();
+    if (data && data.error === "auth_required") { clearSid(); showLogin(); return; } // 세션 만료/무효 → 재로그인
     applyLoadedData(data, frm, to);
     if (onDone) onDone();
   };
@@ -1520,10 +1541,64 @@ function jsonpLoad(manual, frm, to, onDone) {
   }, 120000);
   script.onerror = function () { if (done) return; clearTimeout(timer); delete window[cbName]; gToast("⚠️ 데이터 연결 실패"); document.getElementById("g-src").textContent = "연결 실패"; if (!STATE.loadedFrm) showEmptyState(); };
   let src = SHEETS_ENDPOINT + (SHEETS_ENDPOINT.includes("?") ? "&" : "?") + "callback=" + cbName;
+  const sid = getSid(); if (sid) src += "&sid=" + encodeURIComponent(sid);
   if (frm) src += "&frm=" + encodeURIComponent(frm);
   if (to) src += "&to=" + encodeURIComponent(to);
   script.src = src;
   document.body.appendChild(script);
+}
+
+/* =========================================================================
+   접근 제어 (이메일 일회용 코드 로그인)
+   ========================================================================= */
+const SID_KEY = "naverSaHub.sid";
+function getSid() { try { return localStorage.getItem(SID_KEY) || ""; } catch (e) { return ""; } }
+function setSid(v) { try { localStorage.setItem(SID_KEY, v); } catch (e) {} }
+function clearSid() { try { localStorage.removeItem(SID_KEY); } catch (e) {} }
+function showLogin() { const o = document.getElementById("loginOv"); if (o) o.style.display = "flex"; }
+function hideLogin() { const o = document.getElementById("loginOv"); if (o) o.style.display = "none"; }
+function logout() { clearSid(); location.reload(); }
+async function apiPost(payload) {
+  const res = await fetch(SHEETS_ENDPOINT, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(payload) });
+  return res.json();
+}
+function loginBackToEmail() {
+  document.getElementById("loginStep2").style.display = "none";
+  document.getElementById("loginStep1").style.display = "block";
+  document.getElementById("loginMsg").textContent = "";
+}
+async function submitEmail() {
+  const email = (document.getElementById("loginEmail").value || "").trim();
+  const msg = document.getElementById("loginMsg");
+  if (!email || email.indexOf("@") < 0) { msg.textContent = "올바른 이메일을 입력해주세요."; return; }
+  const btn = document.getElementById("loginEmailBtn"); btn.disabled = true; btn.textContent = "전송 중…"; msg.textContent = "";
+  try {
+    await apiPost({ type: "request_code", email });
+    document.getElementById("loginEmailShow").textContent = email;
+    document.getElementById("loginStep1").style.display = "none";
+    document.getElementById("loginStep2").style.display = "block";
+    document.getElementById("loginCode").focus();
+  } catch (e) { msg.textContent = "전송 실패 — 잠시 후 다시 시도해주세요."; }
+  btn.disabled = false; btn.textContent = "인증코드 받기";
+}
+async function submitCode() {
+  const email = document.getElementById("loginEmailShow").textContent;
+  const code = (document.getElementById("loginCode").value || "").trim();
+  const msg = document.getElementById("loginMsg");
+  if (!code) { msg.textContent = "코드를 입력해주세요."; return; }
+  const btn = document.getElementById("loginCodeBtn"); btn.disabled = true; btn.textContent = "확인 중…"; msg.textContent = "";
+  try {
+    const r = await apiPost({ type: "verify_code", email, code });
+    if (r && r.ok && r.sid) { setSid(r.sid); hideLogin(); bootLoad(); }
+    else { msg.textContent = (r && r.error) || "코드가 올바르지 않습니다."; }
+  } catch (e) { msg.textContent = "확인 실패 — 잠시 후 다시 시도해주세요."; }
+  btn.disabled = false; btn.textContent = "로그인";
+}
+// 세션이 있으면 데이터를 로드하고, 없으면 로그인 화면을 띄운다.
+function bootLoad() {
+  if (!getSid()) { showLogin(); return; }
+  hideLogin();
+  jsonpLoad(false, addDaysS(todayISO(), -DEFAULT_LOAD_DAYS), todayISO());
 }
 function applyLoadedData(data, frm, to) {
   const firstLoad = !STATE.loadedFrm;
@@ -1675,7 +1750,7 @@ setupDropzone();
   const panel = document.getElementById("agencyUploadPanel");
   if (panel && !isAgency) panel.style.display = "none";
 })();
-jsonpLoad(false, addDaysS(todayISO(), -DEFAULT_LOAD_DAYS), todayISO());
+bootLoad();
 </script>
 </body>
 </html>
