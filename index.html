@@ -1622,8 +1622,14 @@ function applyLoadedData(data, frm, to) {
   STATE.loadedTo = to || DB.meta.dataTo;
   reenrichAll(); recomputeMetaRange();
   if (data.guides && data.guides.length) STATE.guides = data.guides;
-  if (firstLoad) { STATE.frm = STATE.loadedFrm; STATE.to = STATE.loadedTo; }
+  if (firstLoad) {
+    // 최초 로드 시 기본 기간필터는 "당월"(이번 달 1일 ~ 최신 데이터일)로 맞춘다.
+    const dataTo = DB.meta.dataTo || STATE.loadedTo;
+    STATE.frm = dataTo.slice(0, 7) + "-01";
+    STATE.to = dataTo;
+  }
   clampRange(); syncRangeInputs(); syncHeader();
+  if (firstLoad) { const b = document.getElementById("dp-thisMonth"); if (b) b.classList.add("on"); }
   renderTabs(); renderActive();
   document.getElementById("g-src").textContent = "구글시트 연동됨" + (data.meta && data.meta.updatedAt ? " · " + new Date(data.meta.updatedAt).toLocaleString("ko-KR") : "");
 }
