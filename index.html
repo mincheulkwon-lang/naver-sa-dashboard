@@ -671,7 +671,7 @@ function presetRange(p) {
   const [dataFrm, dataTo] = rangeBounds();
   if (!dataFrm) return;
   if (p === "all") { STATE.frm = dataFrm; STATE.to = dataTo; }
-  else if (p === "yesterday") { const y = addDaysS(dataTo, -1); STATE.frm = y; STATE.to = y; }
+  else if (p === "yesterday") { STATE.frm = dataTo; STATE.to = dataTo; }
   else if (p === "thisMonth") { STATE.frm = dataTo.slice(0, 7) + "-01"; STATE.to = dataTo; }
   else if (p === "lastMonth") {
     const [y, m] = dataTo.split("-").map(Number);
