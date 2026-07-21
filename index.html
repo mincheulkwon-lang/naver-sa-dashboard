@@ -1541,7 +1541,9 @@ function jsonpLoad(manual, frm, to, onDone) {
   }, 120000);
   script.onerror = function () { if (done) return; clearTimeout(timer); delete window[cbName]; gToast("⚠️ 데이터 연결 실패"); document.getElementById("g-src").textContent = "연결 실패"; if (!STATE.loadedFrm) showEmptyState(); };
   let src = SHEETS_ENDPOINT + (SHEETS_ENDPOINT.includes("?") ? "&" : "?") + "callback=" + cbName;
-  const sid = getSid(); if (sid) src += "&sid=" + encodeURIComponent(sid);
+  // 쿼리 파라미터명은 "sid"가 아니라 "tok"을 쓴다 — "sid"라는 이름으로 세션형 값을 URL에 실으면
+  // 구글 프런트엔드가 요청 자체를 차단(503)하는 현상이 실측으로 확인됨(값과 무관, 이름 문제).
+  const sid = getSid(); if (sid) src += "&tok=" + encodeURIComponent(sid);
   if (frm) src += "&frm=" + encodeURIComponent(frm);
   if (to) src += "&to=" + encodeURIComponent(to);
   script.src = src;
