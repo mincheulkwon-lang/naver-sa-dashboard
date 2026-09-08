@@ -2091,10 +2091,15 @@ async function exportExcelReport() {
    네이티브 차트와 소재 이미지는 브라우저에서 생성할 수 없어 제외하고, 표 중심으로 구성한다.
    ========================================================================= */
 
-/* ⚠️ 광고비 기준. 기존 광고주 리포트(ver0.9)는 원본 총비용을 그대로 써서 부가세 포함 금액이다.
-   전월 리포트와 숫자를 이어가려면 true(기본), 대시보드 화면과 똑같이 맞추려면 false로 바꾼다. */
-const SA_REPORT_VAT_INCLUDED = true;
-const saCost = c => SA_REPORT_VAT_INCLUDED ? Math.round((c || 0) * VAT_RATE) : Math.round(c || 0);
+/* ⚠️ 광고비 기준은 툴바의 부가세 선택(#dumpVat)을 그대로 따른다.
+   · 부가세 제외(정산) = 공급가액 — 정산서와 같은 기준(기본값)
+   · 부가세 포함      = 원본 총비용 기준 — 기존 ver0.9 리포트와 같은 기준
+   대시보드 내부(DB)는 부가세 제외로 들고 있으므로, '포함'일 때만 1.1을 곱한다. */
+function saVatIncluded() {
+  const el = document.getElementById("dumpVat");
+  return !!(el && el.value === "in");
+}
+const saCost = c => saVatIncluded() ? Math.round((c || 0) * VAT_RATE) : Math.round(c || 0);
 
 const SA_WEEKDAY = ["일", "월", "화", "수", "목", "금", "토"];
 
@@ -2373,15 +2378,18 @@ function saCoverSheet(ws, brand, meta, indexRows) {
   };
   kv("광고주 명", "아모레퍼시픽", brand);
   kv("매체 계정", "아모레헤어앤뷰티 (2061142)");
+  if (meta.present && meta.present.length) kv("집행 광고상품", meta.present.join(" · "));
+  kv("광고비 기준", saVatIncluded() ? "부가세 포함 (원본 총비용)" : "공급가액 (부가세 제외) — 정산서 기준");
   kv("보고서 기간", meta.frm, meta.to);
+  // 숫자 서식은 값이 들어간 칸(4열)에 걸어야 한다. 3열은 라벨 칸이라 여기에 걸면 서식이 먹지 않는다.
   kv("소진액(총 비용)", saCost(meta.total.cost));
-  ws.getCell(r - 1, 3).numFmt = SA_FMT.won;
+  ws.getCell(r - 1, 4).numFmt = SA_FMT.won;
   kv("전환금액", Math.round(meta.total.convRevenue));
-  ws.getCell(r - 1, 3).numFmt = SA_FMT.won;
+  ws.getCell(r - 1, 4).numFmt = SA_FMT.won;
   kv("광고 수익률(ROAS)", saCost(meta.total.cost) ? meta.total.convRevenue / saCost(meta.total.cost) : 0);
-  ws.getCell(r - 1, 3).numFmt = SA_FMT.roas;
+  ws.getCell(r - 1, 4).numFmt = SA_FMT.roas;
   kv("경과율", meta.pace);
-  ws.getCell(r - 1, 3).numFmt = "0.0%";
+  ws.getCell(r - 1, 4).numFmt = "0.0%";
   kv("생성일시", meta.now);
   r++;
 
@@ -2422,7 +2430,9 @@ function saCoverSheet(ws, brand, meta, indexRows) {
 
   sec("데이터 기준 안내");
   [
-    `· 금액은 원본 리포트 총비용 기준(부가세 ${SA_REPORT_VAT_INCLUDED ? "포함" : "제외"})입니다.`,
+    saVatIncluded()
+      ? "· 금액은 원본 리포트의 총비용(부가세 포함) 기준입니다."
+      : "· 금액은 공급가액(부가세 제외) 기준입니다 — 정산서와 같은 기준입니다.",
     "· 브랜드검색/신제품검색은 정액 계약이라 원본 광고비가 0으로 집계되어, 계약 단가를 계약기간 일수로 나눠 일할 반영했습니다.",
     "· 검색어 시트는 광고비가 발생한 검색어만 포함하므로 노출수 합계가 기간요약보다 작습니다.",
     "· 방문당 페이지뷰·체류시간은 원본 리포트에서도 제공되지 않아 제외했습니다.",
@@ -2437,180 +2447,485 @@ function saCoverSheet(ws, brand, meta, indexRows) {
   });
 }
 
+/* =========================================================================
+   블록형 레이아웃 (exe 생성기와 동일한 ver0.9 구조)
+   한 시트에 여러 블록이 이어지고, 표는 D열(4)부터 시작한다.
+   각 블록 위에 그 블록을 설명하는 차트가 가로로 놓인다.
+   ⚠️ 차트는 브라우저에서 네이티브로 못 만들어 PNG 이미지다(값 수정 시 자동 갱신 안 됨).
+   ========================================================================= */
+const SA_COL0 = 4;            // D열
+const SA_CHART_BAND = 12;     // 차트가 차지하는 행 수
+const SA_ROW_H = { head: 31.5, data: 21.75, sec: 21, band: 21 };
+
+function saNewSheet(wb, name, brand, title, sub, frm, to) {
+  const ws = wb.addWorksheet(name, { views: [{ showGridLines: false }] });
+  [1.9, 2.1, 10.9].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+  ws.getRow(1).height = 21; ws.getRow(2).height = 33; ws.getRow(3).height = 21;
+
+  const b = ws.getCell(2, SA_COL0);
+  b.value = brand;
+  b.font = { name: SA_FONT_HEAD, size: 14, bold: true, color: { argb: "FFFFFFFF" } };
+  b.fill = { type: "pattern", pattern: "solid", fgColor: { argb: SA_C.brandCell } };
+  b.alignment = { horizontal: "center", vertical: "middle" };
+
+  const e = ws.getCell(2, SA_COL0 + 1);
+  e.value = sub || "";
+  e.font = { name: SA_FONT_HEAD, size: 10, bold: true, color: { argb: SA_C.textDark } };
+  e.fill = { type: "pattern", pattern: "solid", fgColor: { argb: SA_C.headFill } };
+  e.alignment = { horizontal: "center", vertical: "middle" };
+
+  const mid = SA_COL0 + 11;
+  ws.mergeCells(2, SA_COL0 + 2, 2, mid);
+  const t = ws.getCell(2, SA_COL0 + 2);
+  t.value = " " + title;
+  t.font = { name: SA_FONT_HEAD, size: 11, bold: true, color: { argb: SA_C.textDark } };
+  t.fill = { type: "pattern", pattern: "solid", fgColor: { argb: SA_C.headFill } };
+  t.alignment = { horizontal: "left", vertical: "middle" };
+
+  ws.mergeCells(2, mid + 1, 2, mid + 3);
+  const p = ws.getCell(2, mid + 1);
+  p.value = `Monthly    ${frm} ~ ${to} `;
+  p.font = { name: SA_FONT_HEAD, size: 10, bold: true, color: { argb: "FF595959" } };
+  p.fill = { type: "pattern", pattern: "solid", fgColor: { argb: SA_C.headFill } };
+  p.alignment = { horizontal: "right", vertical: "middle" };
+  return ws;
+}
+
+function saSection(ws, row, label) {
+  const c = ws.getCell(row, SA_COL0);
+  c.value = "| " + label;
+  c.font = { name: SA_FONT_HEAD, size: 11, bold: true, color: { argb: SA_C.textDark } };
+  c.alignment = { vertical: "top" };
+  ws.getRow(row).height = SA_ROW_H.sec;
+  return row + 1;
+}
+
+/* 머리글 → 합계 → 상세. 위치 정보를 담은 객체를 돌려준다. */
+function saWriteTable(ws, row, labelCols, rows, opts) {
+  opts = opts || {};
+  const total = opts.total !== false;
+  const band = !!opts.band;
+  const metrics = saMetricCols(labelCols.length + SA_COL0 - 1);
+  const nL = labelCols.length;
+  const all = labelCols.concat(metrics);
+  all.forEach((c, i) => { ws.getColumn(SA_COL0 + i).width = c.w || 13; });
+
+  const hr = ws.getRow(row);
+  all.forEach((c, i) => {
+    const cell = hr.getCell(SA_COL0 + i);
+    cell.value = c.h;
+    cell.font = { name: SA_FONT_HEAD, size: 10, bold: true, color: { argb: SA_C.textDark } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: SA_C.headFill } };
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    cell.border = { left: SA_THIN, right: SA_THIN, bottom: { style: "medium", color: { argb: SA_C.textDark } } };
+  });
+  hr.height = SA_ROW_H.head;
+
+  const tot = opts.totalsObj || sumRows(rows);
+  const put = (rowNo, obj, isTotal, bandIdx) => {
+    const r = ws.getRow(rowNo);
+    all.forEach((c, i) => {
+      const cell = r.getCell(SA_COL0 + i);
+      if (i < nL) {
+        cell.value = isTotal ? (i === 0 ? (opts.totalLabel || "합계") : "") : c.get(obj);
+        cell.font = { name: SA_FONT_HEAD, size: isTotal ? 11 : 10, bold: true,
+                      color: { argb: isTotal ? "FF262626" : "FF7F7F7F" } };
+        cell.alignment = { horizontal: isTotal ? "center" : "left", vertical: "middle" };
+      } else {
+        // ROAS·CTR·전환율·CPC·CPA 는 값이 아니라 수식으로 넣는다(행을 지워도 시트가 다시 계산).
+        // 계산된 값도 함께 저장해 엑셀을 열자마자 숫자가 보이게 한다.
+        cell.value = c.formula
+          ? { formula: c.formula(rowNo), result: c.res ? c.res(isTotal ? tot : obj) : 0 }
+          : c.get(isTotal ? tot : obj);
+        const isRoas = c.h === "광고 수익률";
+        cell.font = isTotal
+          ? { name: SA_FONT_HEAD, size: 11, bold: true, color: { argb: "FF262626" } }
+          : { name: SA_FONT_NUM, size: isRoas ? 14 : 11, bold: true,
+              color: { argb: isRoas ? SA_C.accent1 : SA_C.textDark } };
+        cell.alignment = { horizontal: "center", vertical: "middle" };
+        if (c.fmt) cell.numFmt = c.fmt;
+      }
+      if (isTotal) {
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: SA_C.rowB } };
+        cell.border = saAllBorder();
+      } else {
+        cell.fill = { type: "pattern", pattern: "solid",
+                      fgColor: { argb: band ? (bandIdx % 2 === 0 ? SA_C.rowA : SA_C.rowB) : "FFFFFFFF" } };
+        cell.border = { left: SA_THIN, right: SA_THIN };
+      }
+    });
+    r.height = SA_ROW_H.data;
+  };
+
+  let r = row + 1;
+  if (total) { put(r, null, true, 0); r++; }
+  const first = r;
+  rows.forEach((o, i) => { put(r, o, false, i); r++; });
+  return { hdr: row, first, last: r - 1, n: rows.length, nLabel: nL,
+           lastCol: SA_COL0 + all.length - 1, end: r + 1 };
+}
+
+/* 구성비 표 (원본 '광고상품별 성과' 아래 비중 행) */
+function saShareBlock(ws, row, rows, keyLabel, base) {
+  const keys = [["imp", "노출수"], ["clk", "클릭수"], ["cost", "총 비용"], ["conv", "전환수"], ["convRevenue", "전환금액"]];
+  const tot = base || sumRows(rows);
+  const hr = ws.getRow(row);
+  const head = ["구성비"].concat(keys.map(k => k[1]));
+  head.forEach((h, i) => {
+    const cell = hr.getCell(SA_COL0 + i);
+    cell.value = h;
+    cell.font = { name: SA_FONT_HEAD, size: 10, bold: true, color: { argb: SA_C.textDark } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: SA_C.headFill } };
+    cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    cell.border = { left: SA_THIN, right: SA_THIN, bottom: { style: "medium", color: { argb: SA_C.textDark } } };
+  });
+  hr.height = SA_ROW_H.head;
+  let r = row + 1;
+  rows.forEach(o => {
+    const rr = ws.getRow(r);
+    const c0 = rr.getCell(SA_COL0);
+    c0.value = keyLabel(o);
+    c0.font = { name: SA_FONT_HEAD, size: 10, bold: true, color: { argb: "FF7F7F7F" } };
+    c0.alignment = { horizontal: "left", vertical: "middle" };
+    c0.border = { left: SA_THIN, right: SA_THIN };
+    keys.forEach((k, j) => {
+      const base2 = k[0] === "cost" ? saCost(tot.cost) : xlSafe(tot[k[0]]);
+      const v = k[0] === "cost" ? saCost(o.cost) : xlSafe(o[k[0]]);
+      const cell = rr.getCell(SA_COL0 + 1 + j);
+      cell.value = base2 ? v / base2 : 0;
+      cell.numFmt = SA_FMT.pct;
+      cell.font = { name: SA_FONT_NUM, size: 11, bold: true, color: { argb: SA_C.textDark } };
+      cell.alignment = { horizontal: "center", vertical: "middle" };
+      cell.border = { left: SA_THIN, right: SA_THIN };
+    });
+    rr.height = SA_ROW_H.data;
+    r++;
+  });
+  return r + 1;
+}
+
+/* 블록 위에 차트를 가로로 배치 (열 너비와 무관하게 픽셀 크기 고정) */
+function saChartsAbove(wb, ws, row, cfgs) {
+  let col = SA_COL0 - 1;                       // ExcelJS 는 0-based
+  cfgs.filter(Boolean).forEach(cfg => {
+    const id = wb.addImage({ base64: saChartPng(cfg), extension: "png" });
+    ws.addImage(id, { tl: { col, row: row - 1 }, ext: { width: SA_CHART_W, height: SA_CHART_H }, editAs: "oneCell" });
+    col += 4;
+  });
+  for (let r = row; r < row + SA_CHART_BAND; r++) ws.getRow(r).height = SA_ROW_H.band;
+  return row + SA_CHART_BAND;
+}
+
+/* 섹션 + (차트) + 표 (+ 구성비) 한 덩어리 */
+function saBlock(wb, ws, row, label, labelCols, rows, opts) {
+  opts = opts || {};
+  if (!rows || !rows.length) return row;
+  let r = saSection(ws, row, label);
+  const charts = opts.charts || [];
+  if (charts.length) r = saChartsAbove(wb, ws, r, charts);
+  const t = saWriteTable(ws, r, labelCols, rows, opts);
+  let end = t.end;
+  if (opts.share) end = saShareBlock(ws, end - 1, rows, opts.shareLabel || (o => labelCols[0].get(o)), opts.shareBase);
+  return end;
+}
+
+/* 월별 추이 블록 — exe 생성기의 '| Monthly_최근 N개월 성과' 와 동일 구성.
+   불러온 기간 안에 든 달만 나오므로, 여러 달을 불러왔을 때만 추이 차트와 MoM/YoY 가 붙는다. */
+function saMonthRows(rows) {
+  return groupSum(rows, r => r.d.slice(0, 7), r => ({ _ym: r.d.slice(0, 7) }))
+    .sort((a, b) => a._ym < b._ym ? -1 : 1);
+}
+
+function saDeltaRows(ws, row, months) {
+  if (months.length < 2) return row;
+  const cur = months[months.length - 1];
+  const metrics = saMetricCols(1 + SA_COL0 - 1);
+  const dbl = { style: "double", color: { argb: SA_C.border } };
+  const put = (label, prev) => {
+    const r = ws.getRow(row);
+    const c0 = r.getCell(SA_COL0);
+    c0.value = label;
+    c0.font = { name: SA_FONT_HEAD, size: 10, bold: true, color: { argb: SA_C.textDark } };
+    c0.alignment = { horizontal: "center", vertical: "middle" };
+    c0.border = { left: SA_THIN, right: SA_THIN, bottom: dbl };
+    metrics.forEach((c, i) => {
+      const cell = r.getCell(SA_COL0 + 1 + i);
+      const pv = Number(c.get(prev)) || 0, cv = Number(c.get(cur)) || 0;
+      cell.value = pv ? (cv - pv) / Math.abs(pv) : 0;
+      cell.numFmt = SA_FMT.pct;
+      cell.font = { name: SA_FONT_NUM, size: 11, bold: true, color: { argb: SA_C.textDark } };
+      cell.alignment = { horizontal: "center", vertical: "middle" };
+      cell.border = { left: SA_THIN, right: SA_THIN, bottom: dbl };
+    });
+    r.height = SA_ROW_H.data;
+    row++;
+  };
+  put("MoM", months[months.length - 2]);
+  const py = String(Number(cur._ym.slice(0, 4)) - 1) + cur._ym.slice(4);
+  const prevYear = months.find(o => o._ym === py);
+  if (prevYear) put("YoY", prevYear);
+  return row;
+}
+
+function saMonthlyBlock(wb, ws, row, rows) {
+  const ms = saMonthRows(rows);
+  if (!ms.length) return row;
+  let r = saSection(ws, row, "Monthly_최근 " + ms.length + "개월 성과");
+  if (ms.length >= 2) {
+    const L = ms.map(o => o._ym);
+    r = saChartsAbove(wb, ws, r, [
+      saComboCfg("클릭수&노출수 추이", L, "노출수", ms.map(o => Math.round(xlSafe(o.imp))),
+                 "클릭수", ms.map(o => Math.round(xlSafe(o.clk))), {}),
+      saComboCfg("전환금액&전환수 추이", L, "전환금액", ms.map(o => Math.round(xlSafe(o.convRevenue))),
+                 "전환수", ms.map(o => Math.round(xlSafe(o.conv))), {}),
+      saComboCfg("광고수익률&전환율 추이", L, "광고비", ms.map(o => saCost(o.cost)),
+                 "광고수익률", ms.map(o => saCost(o.cost) ? o.convRevenue / saCost(o.cost) : 0), { linePct: true }),
+      saComboCfg("클릭률&노출대비 전환율 추이", L, "클릭률", ms.map(o => xlSafe(o.ctr) / 100),
+                 "전환율", ms.map(o => xlSafe(o.cvr) / 100), { linePct: true })
+    ]);
+  }
+  const t = saWriteTable(ws, r, [{ h: "Month", w: 18.4, get: o => o._ym }], ms, { total: false });
+  return saDeltaRows(ws, t.end - 1, ms) + 1;
+}
+
+const SA_TYPES = ["쇼핑검색", "파워링크", "파워컨텐츠"];
+const SA_TAG = { "쇼핑검색": "S", "파워링크": "P", "파워컨텐츠": "C" };
+
+function saTopRows(rows, tops) {
+  const out = [];
+  (tops || [1, 10, 20, 50, 100]).forEach(n => {
+    if (n > Math.max(1, rows.length)) return;
+    const o = sumRows(rows.slice(0, n));
+    o._top = "TOP" + n + " 합계";
+    out.push(o);
+  });
+  return out;
+}
+
 function saBuildBrandWorkbook(brand) {
-  const inBrand = arr => arr.filter(x => x.brand === brand && inR(x.d));
-  const shop = arr => inBrand(arr).filter(x => x.campaignType === "쇼핑검색");
+  const inBrand = arr => (arr || []).filter(x => x.brand === brand && inR(x.d));
+  const byType = (arr, t) => inBrand(arr).filter(x => x.campaignType === t);
 
   const dailyAll = inBrand(DB.daily);
   if (!dailyAll.length) return null;
-  const shopDaily = dailyAll.filter(x => x.campaignType === "쇼핑검색");
-  const total = sumRows(shopDaily.length ? shopDaily : dailyAll);
+  const saDaily = dailyAll.filter(x => SA_TYPES.indexOf(x.campaignType) >= 0);
+  if (!saDaily.length) return null;
+  const present = SA_TYPES.filter(t => saDaily.some(r => r.campaignType === t));
 
+  const total = sumRows(saDaily);
   const [y, m, d] = STATE.to.split("-").map(Number);
   const dim = new Date(y, m, 0).getDate();
   const now = new Date(); const pad = n => String(n).padStart(2, "0");
   const meta = {
-    frm: STATE.frm, to: STATE.to, total,
+    frm: STATE.frm, to: STATE.to, total, present,
     pace: Math.min(1, d / dim),
     now: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`
   };
-  const period = `Monthly · ${STATE.frm} ~ ${STATE.to}`;
-  const sub = "쇼핑검색 (전체)";
 
   const wb = new ExcelJS.Workbook();
   wb.creator = "Naver SA Ads Hub";
   wb.created = now;
-  const coverWs = wb.addWorksheet("표지"); // 첫 시트 자리를 먼저 잡아둔다
-
-  // 만들어진 시트만 INDEX에 적는다.
+  const coverWs = wb.addWorksheet("표지");
   const made = [];
+  const F = STATE.frm, T = STATE.to;
+  const g = (rows, keyFn, extra) => groupSum(rows, keyFn, extra).sort((a, b) => b.cost - a.cost);
+  const byDateOf = rows => groupSum(rows, r => r.d, r => ({ d: r.d })).sort((a, b) => a.d < b.d ? -1 : 1);
+  const dateLbl = [{ h: "daily", w: 18.4, get: r => r.d }];
 
-  // S_기간요약 — 일자별
-  const byDate = groupSum(shopDaily, r => r.d, r => ({ d: r.d })).sort((a, b) => a.d < b.d ? -1 : 1);
-  if (byDate.length) {
-    const ws = saAddSheet(wb, "S_기간요약", brand, "네이버 쇼핑검색 기간별 성과", sub, period, "일자별 성과",
-      [{ h: "날짜", w: 13, get: r => r.d }], byDate);
+  const mediaRows = types => g(inBrand(DB.placement).filter(x => types.indexOf(x.campaignType) >= 0),
+                               r => r.media, r => ({ media: r.media }));
+  const dailyCharts = byDate => {
     const L = byDate.map(o => o.d.slice(5));
-    saPlaceCharts(wb, ws, ws.__chartCol, [
-      saComboCfg("노출수 & 클릭수 일자별 추이", L, "노출수", byDate.map(o => o.imp), "클릭수", byDate.map(o => o.clk)),
-      saComboCfg("광고비 & 광고수익률 일자별 추이", L, "광고비", byDate.map(o => saCost(o.cost)), "광고수익률", byDate.map(o => saCost(o.cost) ? o.convRevenue / saCost(o.cost) : 0), { linePct: true }),
-      saComboCfg("광고비 & 전환금액 일자별 추이", L, "광고비", byDate.map(o => saCost(o.cost)), "전환금액", byDate.map(o => o.convRevenue), { lineWon: true }),
-      saComboCfg("클릭률 & 노출대비 전환율 추이", L, "클릭률", byDate.map(o => (o.ctr || 0) / 100), "노출대비 전환율", byDate.map(o => o.imp ? o.conv / o.imp : 0), { barPct: true, linePct: true, lineDec: 2 })
-    ]);
-    made.push(["S_기간요약", "쇼핑검색 기간별(일간) 성과 · 추이 차트"]);
-  }
+    return [
+      saComboCfg("광고비 & 광고수익률 일자별 추이", L, "광고비", byDate.map(o => saCost(o.cost)),
+                 "광고수익률", byDate.map(o => saCost(o.cost) ? o.convRevenue / saCost(o.cost) : 0), { linePct: true }),
+      saComboCfg("노출수 & 클릭수 일자별 추이", L, "노출수", byDate.map(o => Math.round(xlSafe(o.imp))),
+                 "클릭수", byDate.map(o => Math.round(xlSafe(o.clk))), {}),
+      saComboCfg("광고비 & 전환금액 일자별 추이", L, "광고비", byDate.map(o => saCost(o.cost)),
+                 "전환금액", byDate.map(o => Math.round(xlSafe(o.convRevenue))), { lineWon: true })
+    ];
+  };
 
-  // S_타겟팅요약 — 연령대 + 성별
-  const ageRows = groupSum(shop(DB.age), r => r.ageBand, r => ({ ageBand: r.ageBand })).sort((a, b) => b.cost - a.cost);
-  const genderRows = groupSum(shop(DB.gender), r => r.gender, r => ({ gender: r.gender })).sort((a, b) => b.cost - a.cost);
-  if (ageRows.length || genderRows.length) {
-    if (ageRows.length) {
-      const aws = saAddSheet(wb, "S_타겟팅요약", brand, "네이버 쇼핑검색 성과 요약(타겟팅)", sub, period, "연령대별 성과",
-        [{ h: "연령대", w: 16, get: r => r.ageBand }], ageRows);
-      const byAge = [...ageRows].sort((a, b) => String(a.ageBand).localeCompare(String(b.ageBand), "ko"));
-      saPlaceCharts(wb, aws, aws.__chartCol, [
-        saComboCfg("연령대별 광고비 & 광고수익률", byAge.map(o => o.ageBand), "광고비", byAge.map(o => saCost(o.cost)), "광고수익률", byAge.map(o => saCost(o.cost) ? o.convRevenue / saCost(o.cost) : 0), { linePct: true }),
-        saComboCfg("연령대별 전환금액 & 전환율", byAge.map(o => o.ageBand), "전환금액", byAge.map(o => o.convRevenue), "전환율", byAge.map(o => (o.cvr || 0) / 100), { linePct: true, lineDec: 1 })
-      ]);
+  /* ---- 0. 통합 요약 ---- */
+  const tags = present.map(t => SA_TAG[t]).join("+");
+  const comboName = "0." + tags + "_요약";
+  const comboTitle = "네이버 " + present.join("+") + " SA 성과 요약";
+  {
+    const ws = saNewSheet(wb, comboName, brand, comboTitle, "SA 전체", F, T);
+    let r = saMonthlyBlock(wb, ws, 4, saDaily);
+    if (present.length > 1) {
+      const rows = groupSum(saDaily, r2 => r2.campaignType, r2 => ({ _t: r2.campaignType }))
+        .sort((a, b) => SA_TYPES.indexOf(a._t) - SA_TYPES.indexOf(b._t));
+      r = saBlock(wb, ws, r, "광고상품별 성과", [{ h: "광고상품", w: 18.4, get: o => o._t }], rows,
+                  { band: true, share: true, shareLabel: o => o._t });
     }
-    if (genderRows.length) saAddSheet(wb, "S_타겟팅요약(성별)", brand, "네이버 쇼핑검색 성과 요약(타겟팅)", sub, period, "성별 성과",
-      [{ h: "성별", w: 14, get: r => r.gender }], genderRows);
-    made.push(["S_타겟팅요약", "쇼핑검색 연령별 / 성별 성과"]);
+    const md = mediaRows(present);
+    if (md.length) r = saBlock(wb, ws, r, "지면별 성과", [{ h: "지면", w: 18.4, get: o => o.media }], md, { band: true });
+    const bd = byDateOf(saDaily);
+    if (bd.length) r = saBlock(wb, ws, r, "일자별 성과", dateLbl, bd, { charts: dailyCharts(bd) });
+    made.push([comboName, "SA 전체(" + present.join("·") + ") 광고상품별·지면별·일자별 성과"]);
   }
 
-  // S_성과요약 — 카테고리별
-  const catRows = groupSum(shop(DB.adMaterial), r => r.category || "미분류", r => ({ category: r.category || "미분류" })).sort((a, b) => b.cost - a.cost);
-  if (catRows.length) {
-    const cws = saAddSheet(wb, "S_성과요약", brand, "네이버 쇼핑검색 성과 요약", sub, period, "카테고리별 성과",
-      [{ h: "카테고리", w: 22, get: r => r.category }], catRows);
-    const top = catRows.slice(0, 10);
-    saPlaceCharts(wb, cws, cws.__chartCol, [
-      saBarCfg("카테고리별 광고비 비중", top.map(o => o.category), "광고비", top.map(o => saCost(o.cost)), { doughnut: true }),
-      saComboCfg("카테고리별 광고비 & 광고수익률", top.map(o => o.category), "광고비", top.map(o => saCost(o.cost)), "광고수익률", top.map(o => saCost(o.cost) ? o.convRevenue / saCost(o.cost) : 0), { linePct: true })
-    ]);
-    made.push(["S_성과요약", "쇼핑검색 카테고리별 성과 · 비중 차트"]);
+  /* ---- 타겟팅 요약 (원본과 동일하게 SA 전체 1장) ---- */
+  const ageRows = groupSum(inBrand(DB.age).filter(x => present.indexOf(x.campaignType) >= 0),
+                           r => r.ageBand, r => ({ ageBand: r.ageBand })).sort((a, b) => saAgeKey(a.ageBand) - saAgeKey(b.ageBand));
+  const genRows = g(inBrand(DB.gender).filter(x => present.indexOf(x.campaignType) >= 0),
+                    r => r.gender, r => ({ gender: r.gender }));
+  if (ageRows.length || genRows.length) {
+    const ws = saNewSheet(wb, "S_타겟팅요약", brand, comboTitle.replace("성과 요약", "성과 요약(타겟팅)"), "SA 전체", F, T);
+    let r = 4;
+    if (ageRows.length) r = saBlock(wb, ws, r, "연령대별 성과 (그래프)", [{ h: "연령대", w: 16, get: o => o.ageBand }], ageRows, {
+      band: true, charts: [
+        saComboCfg("연령대별 광고비 & 광고수익률", ageRows.map(o => o.ageBand), "광고비", ageRows.map(o => saCost(o.cost)),
+                   "광고수익률", ageRows.map(o => saCost(o.cost) ? o.convRevenue / saCost(o.cost) : 0), { linePct: true }),
+        saComboCfg("연령대별 전환금액 & 전환율", ageRows.map(o => o.ageBand), "전환금액", ageRows.map(o => Math.round(xlSafe(o.convRevenue))),
+                   "전환율", ageRows.map(o => xlSafe(o.cvr) / 100), { linePct: true })
+      ]
+    });
+    if (genRows.length) r = saBlock(wb, ws, r, "성별 성과", [{ h: "성별", w: 16, get: o => o.gender }], genRows, {
+      band: true, charts: [
+        saComboCfg("성별 광고비 & 광고수익률", genRows.map(o => o.gender), "광고비", genRows.map(o => saCost(o.cost)),
+                   "광고수익률", genRows.map(o => saCost(o.cost) ? o.convRevenue / saCost(o.cost) : 0), { linePct: true })
+      ]
+    });
+    made.push(["S_타겟팅요약", "SA 전체 연령대별 · 성별 성과"]);
   }
 
-  // S_상품성과 — TOP 합계/비중 + 상품별
-  const prodRows = groupSum(shop(DB.adMaterial), r => r.productId || r.productName || ("소재:" + r.adMaterialId),
-    r => ({ productId: r.productId, productName: r.productName, category: r.category, adMaterialId: r.adMaterialId })).sort((a, b) => b.cost - a.cost);
-  if (prodRows.length) {
-    const pws = saAddSheet(wb, "S_상품성과", brand, "네이버 쇼핑검색 상품별 성과", sub, period, "상품별 성과 (광고비 상위)",
-      [
-        { h: "상품ID", w: 16, get: r => r.productId || "" },
-        { h: "상품명", w: 46, get: r => r.productName || ("미매핑 소재 " + (r.adMaterialId || "")) },
-        { h: "카테고리", w: 16, get: r => r.category || "" }
-      ], prodRows, { freezeLabels: true, ratioCols: true });
-    const top10 = prodRows.slice(0, 10);
-    const nm = o => (o.productName || o.productId || o.adMaterialId || "");
-    saPlaceCharts(wb, pws, pws.__chartCol, [
-      saComboCfg("상품 TOP10 광고비 & 광고수익률", top10.map(nm), "광고비", top10.map(o => saCost(o.cost)), "광고수익률", top10.map(o => saCost(o.cost) ? o.convRevenue / saCost(o.cost) : 0), { linePct: true }),
-      saBarCfg("상품 TOP10 광고비 비중", top10.map(nm), "광고비", top10.map(o => saCost(o.cost)), { doughnut: true })
-    ]);
-    // TOP N 합계
-    const tops = [1, 10, 20, 50, 100].filter(n => n <= Math.max(1, prodRows.length));
-    const topRows = tops.map(n => Object.assign({ _label: `TOP${n} 합계` }, sumRows(prodRows.slice(0, n))));
-    saAddSheet(wb, "S_상품성과(TOP)", brand, "네이버 쇼핑검색 상품별 성과", sub, period, "상품 TOP 합계 및 비중",
-      [{ h: "구분", w: 18, get: r => r._label }], topRows, { ratioCols: true });
-    made.push(["S_상품성과", "쇼핑검색 상품별 성과 · TOP 합계/비중"]);
-  }
+  /* ---- 광고상품별 시트 ---- */
+  present.forEach(ctype => {
+    const tag = SA_TAG[ctype], nm = ctype, sub = nm + " (전체)";
+    const dRows = saDaily.filter(x => x.campaignType === ctype);
+    const bd = byDateOf(dRows);
 
-  // S_소재성과
-  const matRows = groupSum(shop(DB.adMaterial), r => r.adMaterialId, r => ({ adMaterialId: r.adMaterialId, productName: r.productName })).sort((a, b) => b.cost - a.cost);
-  if (matRows.length) {
-    saAddSheet(wb, "S_소재성과", brand, "네이버 쇼핑검색 소재별 성과", sub, period, "소재별 성과",
-      [
-        { h: "소재ID", w: 30, get: r => r.adMaterialId || "" },
-        { h: "상품명", w: 44, get: r => r.productName || "" }
-      ], matRows, { freezeLabels: true, ratioCols: true });
-    made.push(["S_소재성과", "쇼핑검색 소재별 성과"]);
-  }
-
-  // S_검색어성과
-  const qRows = groupSum(shop(DB.shoppingQuery), r => r.query, r => ({ query: r.query })).sort((a, b) => b.cost - a.cost);
-  if (qRows.length) {
-    saAddSheet(wb, "S_검색어성과", brand, "네이버 쇼핑검색 검색어별 성과", sub, period, "검색어별 성과 (광고비 발생 기준)",
-      [{ h: "검색어", w: 34, get: r => r.query }], qRows, { ratioCols: true });
-    made.push(["S_검색어성과", "쇼핑검색 검색어별 성과"]);
-  }
-
-  // S_Daily — 월/주차/요일/날짜
-  if (byDate.length) {
-    const dRows = byDate.map(o => Object.assign({}, o, {
-      _month: o.d.slice(0, 7), _week: mondayOf(o.d), _wd: SA_WEEKDAY[new Date(o.d + "T00:00:00").getDay()]
-    }));
-    saAddSheet(wb, "S_Daily", brand, "네이버 쇼핑검색 성과 상세", sub, period, "월 / 주차 / 요일 / 날짜별 성과",
-      [
-        { h: "월별", w: 10, get: r => r._month },
-        { h: "주차", w: 13, get: r => r._week },
-        { h: "요일", w: 7, get: r => r._wd },
-        { h: "날짜", w: 13, get: r => r.d }
-      ], dRows, { freezeLabels: true });
-    made.push(["S_Daily", "쇼핑검색 월간·주차·요일·일간 성과 상세"]);
-  }
-
-  // 지면별 (대시보드 보유 데이터 — 원본 양식엔 없지만 유용해 추가)
-  const plRows = groupSum(shop(DB.placement), r => r.media, r => ({ media: r.media })).sort((a, b) => b.cost - a.cost);
-  if (plRows.length) {
-    saAddSheet(wb, "S_지면별", brand, "네이버 쇼핑검색 지면별 성과", sub, period, "검색 / 콘텐츠 매체별 성과",
-      [{ h: "지면(매체)", w: 18, get: r => r.media }], plRows);
-    made.push(["S_지면별", "쇼핑검색 지면(검색/콘텐츠 매체)별 성과"]);
-  }
-
-  // 파워링크 — 키워드별
-  const plkDaily = dailyAll.filter(x => x.campaignType === "파워링크");
-  const pKw = groupSum(inBrand(DB.keyword).filter(x => x.campaignType === "파워링크"), r => r.keyword,
-    r => ({ keyword: r.keyword === "-" ? "일반(비키워드)" : r.keyword })).sort((a, b) => b.cost - a.cost);
-  if (plkDaily.length) {
-    const pByDate = groupSum(plkDaily, r => r.d, r => ({ d: r.d })).sort((a, b) => a.d < b.d ? -1 : 1);
-    saAddSheet(wb, "P_기간요약", brand, "네이버 파워링크 기간별 성과", "파워링크 (전체)", period, "일자별 성과",
-      [{ h: "날짜", w: 13, get: r => r.d }], pByDate);
-    made.push(["P_기간요약", "파워링크 기간별(일간) 성과"]);
-    if (pKw.length) {
-      saAddSheet(wb, "P_키워드성과", brand, "네이버 파워링크 키워드별 성과", "파워링크 (전체)", period, "키워드별 성과",
-        [{ h: "키워드", w: 30, get: r => r.keyword }], pKw, { ratioCols: true });
-      made.push(["P_키워드성과", "파워링크 키워드별 성과"]);
+    {   // {tag}_기간요약
+      const ws = saNewSheet(wb, tag + "_기간요약", brand, "네이버 " + nm + " 기간 성과 요약", sub, F, T);
+      let r = saMonthlyBlock(wb, ws, 4, dRows);
+      const md = mediaRows([ctype]);
+      if (md.length) r = saBlock(wb, ws, r, "지면별 성과", [{ h: "지면", w: 18.4, get: o => o.media }], md, { band: true });
+      if (bd.length) r = saBlock(wb, ws, r, "일자별 성과", dateLbl, bd, { charts: dailyCharts(bd) });
+      made.push([tag + "_기간요약", nm + " 지면별 · 일자별 성과"]);
     }
-  }
 
-  // 브랜드검색 — 일자별 + 키워드별 (정액 계약이라 계약 단가 일할 반영분)
-  const bsDaily = dailyAll.filter(x => x.campaignType === "브랜드검색/신제품검색");
-  if (bsDaily.length) {
-    const bsByDate = groupSum(bsDaily, r => r.d, r => ({ d: r.d })).sort((a, b) => a.d < b.d ? -1 : 1);
-    saAddSheet(wb, "BS_기간요약", brand, "네이버 브랜드검색 기간별 성과", "브랜드검색/신제품검색", period, "일자별 성과",
-      [{ h: "날짜", w: 13, get: r => r.d }], bsByDate);
-    made.push(["BS_기간요약", "브랜드검색 기간별(일간) 성과 · 계약단가 일할 반영"]);
-    const bsKw = groupSum(inBrand(DB.keyword).filter(x => x.campaignType === "브랜드검색/신제품검색"), r => r.keyword,
-      r => ({ keyword: r.keyword === "-" ? "일반(비키워드)" : r.keyword })).sort((a, b) => b.convRevenue - a.convRevenue);
-    if (bsKw.length) {
-      saAddSheet(wb, "BS_키워드성과", brand, "네이버 브랜드검색 검색어별 성과", "브랜드검색/신제품검색", period, "검색어별 성과 (전환금액 내림차순)",
-        [{ h: "검색어", w: 30, get: r => r.keyword }], bsKw);
-      made.push(["BS_키워드성과", "브랜드검색 검색어별 성과 (원본 광고비 0 · 정액 계약)"]);
+    if (ctype === "파워컨텐츠") return;   // 원본도 파워컨텐츠는 기간요약 한 장뿐
+
+    const kw = byType(DB.keyword, ctype);
+    const mat = byType(DB.adMaterial, ctype);
+    const cats = g(mat, r => r.category || "미분류", r => ({ category: r.category || "미분류" }));
+    const prods = g(mat, r => r.productId || r.productName || r.adMaterialId,
+                    r => ({ productId: r.productId, productName: r.productName, category: r.category, adMaterialId: r.adMaterialId }));
+    const kws = g(kw, r => r.keyword, r => ({ keyword: r.keyword === "-" ? "일반(비키워드)" : r.keyword }));
+    const qs = ctype === "쇼핑검색" ? g(byType(DB.shoppingQuery, ctype), r => r.query, r => ({ query: r.query })) : null;
+    const convSrc = ctype === "쇼핑검색" ? qs : kws;
+    const convLbl = ctype === "쇼핑검색"
+      ? { h: "검색어", w: 34, get: o => o.query } : { h: "키워드", w: 34, get: o => o.keyword };
+
+    {   // {tag}_성과요약
+      const ws = saNewSheet(wb, tag + "_성과요약", brand, "네이버 " + nm + " 성과 요약", sub, F, T);
+      let r = 4, any = false;
+      if (cats.length) {
+        r = saBlock(wb, ws, r, "카테고리별 성과", [{ h: "카테고리", w: 24, get: o => o.category }], cats, {
+          band: true, share: true, shareLabel: o => o.category,
+          charts: [
+            saComboCfg("카테고리별 광고비 & 광고수익률", cats.map(o => o.category), "광고비", cats.map(o => saCost(o.cost)),
+                       "광고수익률", cats.map(o => saCost(o.cost) ? o.convRevenue / saCost(o.cost) : 0), { linePct: true }),
+            saBarCfg("카테고리별 광고비 비중", cats.slice(0, 10).map(o => o.category), "광고비",
+                     cats.slice(0, 10).map(o => saCost(o.cost)), { doughnut: true })
+          ]
+        });
+        any = true;
+      }
+      const md = mediaRows([ctype]);
+      if (md.length) { r = saBlock(wb, ws, r, "지면별 성과", [{ h: "지면", w: 18.4, get: o => o.media }], md, { band: true }); any = true; }
+      const cp = prods.filter(p => xlSafe(p.conv) > 0).sort((a, b) => b.convRevenue - a.convRevenue).slice(0, 20);
+      if (cp.length) {
+        r = saBlock(wb, ws, r, "판매전환 기여 상품 TOP 20",
+          [{ h: "상품ID", w: 16, get: o => o.productId || "" }, { h: "상품명", w: 46, get: o => o.productName || "" }], cp, { band: true });
+        any = true;
+      }
+      const ck = (convSrc || []).filter(k => xlSafe(k.conv) > 0).sort((a, b) => b.convRevenue - a.convRevenue).slice(0, 100);
+      if (ck.length) { r = saBlock(wb, ws, r, "판매전환 기여 " + convLbl.h + " TOP " + ck.length, [convLbl], ck, { band: true }); any = true; }
+      if (any) made.push([tag + "_성과요약", nm + " 카테고리 · 지면 · 판매전환 기여 TOP"]);
+      else wb.removeWorksheet(ws.id);
     }
-  }
+
+    if (ctype === "쇼핑검색" && prods.length) {
+      const ws = saNewSheet(wb, "S_상품성과", brand, "네이버 쇼핑검색 상품별 성과", sub, F, T);
+      let r = 4;
+      r = saBlock(wb, ws, r, "상품 TOP 합계 및 비중", [{ h: "구분", w: 18.4, get: o => o._top }], saTopRows(prods),
+                  { total: false, share: true, shareBase: sumRows(prods), shareLabel: o => o._top });
+      const top10 = prods.slice(0, 10);
+      const nmOf = o => (o.productName || o.productId || o.adMaterialId || "").slice(0, 18);
+      r = saBlock(wb, ws, r, "상품 전체",
+        [{ h: "상품ID", w: 16, get: o => o.productId || "" },
+         { h: "상품명", w: 46, get: o => o.productName || ("미매핑 소재 " + (o.adMaterialId || "")) },
+         { h: "카테고리", w: 18, get: o => o.category || "" }], prods, {
+          band: true, charts: [
+            saComboCfg("상품 TOP10 광고비 & 광고수익률", top10.map(nmOf), "광고비", top10.map(o => saCost(o.cost)),
+                       "광고수익률", top10.map(o => saCost(o.cost) ? o.convRevenue / saCost(o.cost) : 0), { linePct: true }),
+            saBarCfg("상품 TOP10 광고비 비중", top10.map(nmOf), "광고비", top10.map(o => saCost(o.cost)), { doughnut: true })
+          ]
+        });
+      made.push(["S_상품성과", "쇼핑검색 상품별 성과 · TOP 합계 및 비중"]);
+    }
+
+    const mats = g(mat, r => r.adMaterialId, r => ({ adMaterialId: r.adMaterialId, productName: r.productName }));
+    if (ctype === "쇼핑검색" && mats.length) {
+      const ws = saNewSheet(wb, "S_소재성과", brand, "네이버 쇼핑검색 소재별 성과", sub, F, T);
+      let r = 4;
+      r = saBlock(wb, ws, r, "소재 TOP 합계 및 비중", [{ h: "구분", w: 18.4, get: o => o._top }], saTopRows(mats),
+                  { total: false, share: true, shareBase: sumRows(mats), shareLabel: o => o._top });
+      r = saBlock(wb, ws, r, "소재 전체",
+        [{ h: "소재ID", w: 32, get: o => o.adMaterialId || "" },
+         { h: "상품명", w: 46, get: o => o.productName || "" }], mats, { band: true });
+      made.push(["S_소재성과", "쇼핑검색 소재별 성과 · TOP 합계 및 비중"]);
+    }
+
+    if (ctype === "쇼핑검색") {
+      if (qs && qs.length) {
+        const top = qs.slice(0, 1000);
+        const ws = saNewSheet(wb, "S_검색어성과", brand, "네이버 쇼핑검색 검색어별 성과", sub, F, T);
+        let r = 4;
+        r = saBlock(wb, ws, r, "검색어 TOP " + top.length + " 성과 요약", [{ h: "구분", w: 18.4, get: o => o._top }],
+                    saTopRows(top), { total: false, share: true, shareBase: sumRows(qs), shareLabel: o => o._top });
+        r = saBlock(wb, ws, r, "검색어 TOP " + top.length + " 상세", [{ h: "검색어", w: 34, get: o => o.query }], top, { band: true });
+        made.push(["S_검색어성과", "쇼핑검색 검색어별 성과 (검색 매체 클릭 기준 · 콘텐츠 매체 제외)"]);
+      }
+    } else if (kws.length) {
+      const top = kws.slice(0, 1000);
+      const ws = saNewSheet(wb, tag + "_키워드성과", brand, "네이버 " + nm + " 키워드별 성과", sub, F, T);
+      let r = 4;
+      r = saBlock(wb, ws, r, "키워드 TOP 합계 및 비중", [{ h: "구분", w: 18.4, get: o => o._top }],
+                  saTopRows(top), { total: false, share: true, shareBase: sumRows(kws), shareLabel: o => o._top });
+      r = saBlock(wb, ws, r, "키워드 TOP " + top.length + " 상세", [{ h: "키워드", w: 34, get: o => o.keyword }], top, { band: true });
+      made.push([tag + "_키워드성과", nm + " 키워드별 성과"]);
+    }
+
+    if (bd.length) {   // {tag}_Daily
+      const rows = bd.map(o => Object.assign({}, o, {
+        _week: mondayOf(o.d), _wd: SA_WEEKDAY[new Date(o.d + "T00:00:00").getDay()]
+      }));
+      const weekly = groupSum(rows, r2 => r2._week, r2 => ({ _week: r2._week })).sort((a, b) => a._week < b._week ? -1 : 1);
+      const ws = saNewSheet(wb, tag + "_Daily", brand, "네이버 " + nm + " 광고성과", sub, F, T);
+      let r = saBlock(wb, ws, 4, "Monthly 성과",
+        [{ h: "Month", w: 18.4, get: o => o._ym }], saMonthRows(dRows), { total: false });
+      r = saBlock(wb, ws, r, "Weekly 성과", [{ h: "주차(시작일)", w: 18.4, get: o => o._week }], weekly, { band: true });
+      r = saBlock(wb, ws, r, "Daily 성과",
+        [{ h: "날짜", w: 13, get: o => o.d }, { h: "요일", w: 8, get: o => o._wd }], rows, { band: true });
+      made.push([tag + "_Daily", nm + " 주차별 · 일자별 상세"]);
+    }
+  });
 
   saCoverSheet(coverWs, brand, meta, made);
   return wb;
+}
+
+/* '14세 미만' → '14세 ~ 18세' → … → '알 수 없음' 순 정렬 */
+function saAgeKey(band) {
+  const s = String(band || "");
+  const m = s.match(/(\d+)/);
+  if (!m) return 9999;
+  const n = Number(m[1]);
+  return s.indexOf("미만") >= 0 ? n - 1 : n;
 }
 
 /* 시트 덤프 내보내기 — 리포트 생성기(SA리포트생성기.exe)에 넣는 JSON.
