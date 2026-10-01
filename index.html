@@ -3,6 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- 검색엔진 색인 차단. 광고주 데이터를 다루는 비공개 페이지라 검색 결과에 나오면 안 된다.
+     (로그인 전 화면에도 광고주명·매체 계정번호가 HTML에 그대로 들어 있어 크롤러가 읽을 수 있다)
+     robots.txt 는 프로젝트 페이지(/naver-sa-dashboard/)에선 크롤러가 보지 않으므로 이 메타가 실질적 수단이다. -->
+<meta name="robots" content="noindex, nofollow, noarchive, nosnippet">
+<meta name="googlebot" content="noindex, nofollow">
 <title>네이버 SA 광고 대시보드</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;800&display=swap" rel="stylesheet">
@@ -586,7 +591,7 @@ footer{padding:26px;color:var(--faint);font-size:11px;text-align:center;border-t
    설정 — Apps Script 배포 후 아래 두 값을 채우세요 (SETUP.md 참고)
    ========================================================================= */
 const SHEETS_ENDPOINT = "https://script.google.com/macros/s/AKfycbyW_BkLR8My44sF-l9CxL2jCHV3AqnlDT7E91MXDk-YYlCDJ_5Pu11q5Sf1Qg_ptao51w/exec";
-const WRITE_TOKEN = "nvr-sa-5LFSP5KfWpDRfKsov45NtxU-sFATmcr0";
+const WRITE_TOKEN = "nvr-sa-OicFDb5LzIZTsLmuKyvD4kyYG0dCTdwzJSWIOHCYMTY";
 const MEDIA_NO = "2061142";
 const LS_KEY = "naverSaHub.local.v1"; // openaiKey 등 브라우저 로컬 전용 값만 저장
 
