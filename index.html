@@ -368,6 +368,7 @@ footer{padding:26px;color:var(--faint);font-size:11px;text-align:center;border-t
     </div>
 
     <div class="panel on" id="p-overview">
+      <div class="note" id="advNotice" style="display:none"></div>
       <div id="rail"></div>
       <div class="hero" id="hero"></div>
       <div class="kpi-cap" id="kpiCap"></div>
@@ -471,6 +472,30 @@ footer{padding:26px;color:var(--faint);font-size:11px;text-align:center;border-t
         <div class="box"><h3>지면별 광고비 비중</h3><div class="chart-host sm"><canvas id="chartPlacement"></canvas></div></div>
         <div class="tablewrap" style="align-self:start"><div class="tablescroll"><table class="dt" id="placeTable"></table></div></div>
       </div>
+    </div>
+
+    <div class="panel" id="p-advoost">
+      <div class="note">ADvoost 쇼핑은 노출(CPM) 기반 상품이라 검색광고와 과금·전환 방식이 달라 <b>별도 집계</b>합니다.
+        전환·매출은 쇼핑검색과 같은 <b>구매완료</b> 기준이며, 장바구니 기여는 따로 표시합니다.</div>
+      <div class="filterbar">
+        <div class="fgroup"><span class="lbl">보기</span>
+          <div class="vm-seg">
+            <button id="advSegBrand" class="on" onclick="setAdvSeg('brand')">브랜드별</button>
+            <button id="advSegProduct" onclick="setAdvSeg('product')">상품별</button>
+            <button id="advSegGroup" onclick="setAdvSeg('group')">대분류별</button>
+            <button id="advSegCategory" onclick="setAdvSeg('category')">카테고리별</button>
+            <button id="advSegCampaign" onclick="setAdvSeg('campaign')">캠페인별</button>
+            <button id="advSegDaily" onclick="setAdvSeg('daily')">일자별</button>
+          </div>
+        </div>
+        <div class="right count"><b id="advCount">0</b>건 · 헤더 클릭 정렬</div>
+      </div>
+      <div id="advKpis" class="kpis"></div>
+      <div class="grid2">
+        <div class="box"><h3>브랜드별 광고비 비중</h3><div class="chart-host sm"><canvas id="chartAdvBrand"></canvas></div></div>
+        <div class="box"><h3>일자별 광고비 · 광고수익률</h3><div class="chart-host sm"><canvas id="chartAdvDaily"></canvas></div></div>
+      </div>
+      <div class="tablewrap"><div class="tablescroll"><table class="dt" id="advTable"></table></div></div>
     </div>
 
     <div class="panel" id="p-demo">
@@ -609,7 +634,8 @@ let STATE = {
   openaiKey: "", openaiModel: "gpt-4o-mini",
   guides: ["보고 톤은 간결한 개조식(■)으로, 실무 액션 중심으로 작성", "증액·입찰조정 권고는 효율 상위 캠페인/키워드에만 제안"],
   campSort: { k: "cost", dir: "desc" }, kwSort: { k: "cost", dir: "desc" },
-  matSort: { k: "cost", dir: "desc" }, querySort: { k: "cost", dir: "desc" }, demoSort: { k: "cost", dir: "desc" }, placeSort: { k: "cost", dir: "desc" }
+  matSort: { k: "cost", dir: "desc" }, querySort: { k: "cost", dir: "desc" }, demoSort: { k: "cost", dir: "desc" }, placeSort: { k: "cost", dir: "desc" },
+  advSeg: "brand", advSort: { k: "cost", dir: "desc" }
 };
 
 /* 탭 구조: 최상위 항목(개요/캠페인 그룹/금일코멘트/주간리포트/액션히스토리/AI리포트) + "캠페인" 그룹 하위 서브탭.
@@ -618,11 +644,13 @@ const TABS = {
   overview: { l: "개요", i: "📊" },
   campaign: { l: "캠페인/광고그룹", i: "🎯" }, keyword: { l: "키워드", i: "🔑" }, material: { l: "상품 성과", i: "📦" },
   query: { l: "검색어", i: "🔎" }, placement: { l: "지면별", i: "🗂" }, demo: { l: "성별·연령", i: "👥" },
+  advoost: { l: "ADvoost 쇼핑", i: "🚀" },
   weekly: { l: "주간 리포트", i: "🗓" }
 };
 const TAB_GROUPS = [
   { key: "overview", l: "개요", i: "📊" },
   { key: "campaignGroup", l: "캠페인", i: "🎯", children: ["campaign", "keyword", "material", "query", "placement", "demo"] },
+  { key: "advoost", l: "ADvoost", i: "🚀" },
   { key: "weekly", l: "주간 리포트", i: "🗓" }
 ];
 
@@ -634,8 +662,9 @@ const CT_COLOR = { "파워링크": "#2563EB", "쇼핑검색": "#03C75A", "파워
    데이터 저장소
    ========================================================================= */
 let DB = {
-  rawByType: { daily: [], gender: [], age: [], keyword: [], adMaterial: [], shoppingQuery: [], placement: [] },
+  rawByType: { daily: [], gender: [], age: [], keyword: [], adMaterial: [], shoppingQuery: [], placement: [], advoost: [] },
   indexMapRaw: [],
+  productMasterRaw: [],
   indexByKey: {},
   brandContractsRaw: [],
   brandContractsByAdgroup: {},
@@ -757,9 +786,49 @@ const FILE_SIGNATURES = [
   { token: "키워드별_raw", kind: "KEYWORD" },
   { token: "쇼검 소재별_raw", kind: "AD_MATERIAL" },
   { token: "쇼핑검색_검색어_raw", kind: "SHOPPING_QUERY" },
+  // 네이버가 제목을 축약한 표기(2026-09~). 파일명이 아니라 1행 제목으로 판별하므로 둘 다 받는다.
+  { token: "쇼검 검색어_raw", kind: "SHOPPING_QUERY" },
   { token: "지면별_raw", kind: "PLACEMENT" }
 ];
 const TITLE_RE = /\(ADEF\)\s*(.+?)_raw\((\d{4}\.\d{2}\.\d{2}\.)~(\d{4}\.\d{2}\.\d{2}\.)\),\s*(\d+)/;
+
+/* ---- ADvoost 쇼핑 ----
+   기존 7종과 달리 1행이 바로 헤더이고 파일명이 늘 result.csv 라 제목으로 판별할 수 없다.
+   헤더 구성으로 가려낸다: "캠페인 목적" + "네이버쇼핑 상품 ID" 조합은 이 양식에만 있다.
+   ⚠️ 같은 리포트에 '요약본(17컬럼)'이 있는데 거기엔 구매완료가 분리돼 있지 않다.
+      총 전환에는 장바구니·위시리스트가 섞여 매출이 4배가량 부풀려지므로 받지 않는다. */
+const ADV_REQUIRED = ["캠페인 목적", "네이버쇼핑 상품 ID", "쇼핑몰 상품 ID", "총비용"];
+const ADV_DETAIL = ["구매완료 수", "구매완료 전환매출액"];
+function classifyAdvoostHeader(fields) {
+  const has = n => fields.indexOf(n) >= 0;
+  if (!ADV_REQUIRED.every(has)) return null;
+  return ADV_DETAIL.every(has) ? "ADVOOST" : "ADVOOST_SUMMARY";
+}
+function parseAdvoost(rows) {
+  return rows.map(r => {
+    const num = k => toN(r[k]);
+    return {
+      d: toDate(r["기간"]),
+      campaign: String(r["캠페인 이름"] || "").trim(),
+      productId: String(r["쇼핑몰 상품 ID"] || "").trim(),
+      nvProductId: String(r["네이버쇼핑 상품 ID"] || "").trim(),
+      brand: String(r["상품 브랜드"] || "").trim() || "미분류",
+      productName: String(r["상품명"] || "").trim(),
+      nvCategory: String(r["상품 카테고리"] || "").trim(),
+      imp: Math.round(num("노출수")), clk: Math.round(num("클릭수")),
+      // 다른 테이블과 같은 규약: cost 는 공급가액, costIncl 에 원본(부가세 포함)을 남겨
+      // 합계를 낼 때 한 번만 나누게 한다(행마다 나누면 정산서와 수십원 어긋난다).
+      cost: Math.round(exVat(num("총비용"))), costIncl: Math.round(num("총비용")),
+      conv: Math.round(num("구매완료 수")),          // 쇼핑검색의 '구매완료 전환수' 와 같은 정의
+      convRevenue: Math.round(num("구매완료 전환매출액")),
+      cart: Math.round(num("장바구니 담기 수")),
+      cartRevenue: Math.round(num("장바구니 전환매출액")),
+      totConv: Math.round(num("총 전환수")),
+      totRevenue: Math.round(num("총 전환매출액"))
+    };
+  }).filter(r => r.d && r.productId);
+}
+
 function classifyTitle(line) { for (const sig of FILE_SIGNATURES) if (line.includes(sig.token)) return sig.kind; return null; }
 function extractMeta(line) { const m = line.match(TITLE_RE); if (!m) return null; return { name: m[1], frm: toDate(m[2]), to: toDate(m[3]), mediaNo: m[4] }; }
 
@@ -801,6 +870,47 @@ function parseIndexRows(rows) {
   }).filter(r => r.campaign);
 }
 function buildIndexByKey(rows) { const m = {}; rows.forEach(r => { m[r.campaign + "|" + r.adgroup] = r; }); return m; }
+
+/* 상품 마스터 (인덱스.xlsx 의 '상품 마스터' 시트 · 컬럼: 상품ID/브랜드/상품명/카테고리/네이버카테고리)
+   ADvoost 는 광고그룹이 없어 (캠페인,광고그룹) 인덱스로는 조인이 안 된다.
+   상품ID 를 공통 키로 써서 에이전시 카테고리 체계에 연결한다. */
+/* 세부 카테고리 → 대분류.
+   카테고리가 32개로 잘게 쪼개져 있어 ADvoost 표의 절반이 상품 1~2개짜리 꼬리가 된다.
+   세부 카테고리를 합쳐 버리면 쇼핑검색 인덱스(두피케어 24행, 클렌징폼 11행 …)와 이름이 어긋나므로,
+   원본은 그대로 두고 여기서 순수 매핑으로만 묶는다. 양쪽에 똑같이 적용돼 교차분석이 깨지지 않는다.
+   광고비가 큰 바디클렌저·탈모케어는 다른 것에 섞이면 신호가 묻혀 따로 둔다. */
+const CAT_GROUP = {
+  "바디로션": "바디케어", "바디크림": "바디케어", "바디오일": "바디케어", "바디스크럽": "바디케어",
+  "바디미스트/샤워코롱": "바디케어", "바디케어세트": "바디케어", "핸드케어": "바디케어",
+  "풋케어": "바디케어", "임산부화장품": "바디케어", "여성청결제": "바디케어",
+  "바디클렌저": "바디클렌저",
+  "탈모케어": "탈모케어",
+  "샴푸": "헤어케어", "린스/컨디셔너": "헤어케어", "트리트먼트/헤어팩": "헤어케어",
+  "헤어에센스": "헤어케어", "헤어케어세트": "헤어케어", "두피케어": "헤어케어",
+  "염색약": "염색/스타일링", "헤어스프레이": "염색/스타일링", "헤어미스트": "염색/스타일링",
+  "클렌징폼": "클렌징", "클렌징오일": "클렌징", "세안비누": "클렌징", "립앤아이리무버": "클렌징",
+  "선크림": "선케어", "선스틱": "선케어",
+  "스킨/토너": "스킨케어",
+  "칫솔": "구강케어", "치약": "구강케어", "유아칫솔": "구강케어",
+  "남녀공용향수": "향수"
+};
+// 매핑에 없는 카테고리는 이름을 그대로 쓴다(새 카테고리가 생겨도 '미분류'로 사라지지 않게).
+const catGroupOf = c => { const k = String(c || "").trim(); return k ? (CAT_GROUP[k] || k) : "미분류"; };
+
+function looksLikeProductSheet(rows) {
+  return rows.length > 0 && Object.prototype.hasOwnProperty.call(rows[0], "상품ID")
+    && Object.prototype.hasOwnProperty.call(rows[0], "카테고리")
+    && !Object.prototype.hasOwnProperty.call(rows[0], "광고그룹");
+}
+function parseProductMaster(rows) {
+  return rows.map(r => ({
+    productId: String(r["상품ID"] || "").trim(),
+    brand: String(r["브랜드"] || "").trim(),
+    productName: String(r["상품명"] || "").trim(),
+    category: String(r["카테고리"] || "").trim(),
+    nvCategory: String(r["네이버카테고리"] || "").trim()
+  })).filter(r => r.productId);
+}
 
 /* 브랜드검색 계약 단가표 (인덱스.xlsx 2번째 이후 시트 · 컬럼: 광고그룹/계약기간/계약 광고비)
    브랜드검색/신제품검색은 클릭과 무관한 정액 계약이라 raw의 총비용이 0으로 찍힌다.
@@ -863,8 +973,28 @@ function aggregateToBrand(rows, dimField, idxByKey) {
   });
   return Object.values(m).map(o => { o.avgRank = o._ri > 0 ? o._rw / o._ri : 0; delete o._rw; delete o._ri; return o; });
 }
+function buildProductById(idxRows, masterRows) {
+  // 인덱스(캠페인·광고그룹 기준)에서 상품ID → 카테고리·상품명 을 뽑아 둔다.
+  // ADvoost 는 광고그룹이 없어 이 상품ID 맵으로만 에이전시 카테고리에 연결된다.
+  const m = {};
+  (idxRows || []).forEach(r => {
+    const p = String(r.productId || "").trim();
+    if (!p) return;
+    const e = m[p] || (m[p] = { category: "", productName: "" });
+    if (!e.category && r.category) e.category = r.category;
+    if (!e.productName && r.productName) e.productName = r.productName;
+  });
+  // 상품 마스터가 있으면 그 값이 정본 (ADvoost 전용 상품은 여기에만 있다)
+  (masterRows || []).forEach(r => {
+    const e = m[r.productId] || (m[r.productId] = { category: "", productName: "" });
+    if (r.category) e.category = r.category;
+    if (r.productName && !e.productName) e.productName = r.productName;
+  });
+  return m;
+}
 function reenrichAll() {
   DB.brandContractsByAdgroup = buildBrandContractsByAdgroup(DB.brandContractsRaw);
+  DB.productByIdId = buildProductById(DB.indexMapRaw, DB.productMasterRaw);
   // 계약 단가 적용은 DAILY(및 그로부터 파생되는 개요·캠페인/광고그룹 탭)에만 반영한다.
   // 키워드·상품성과는 브랜드검색이 하루에 여러 행(소재)으로 쪼개져 있어, 같은 일할 금액을
   // 행마다 그대로 넣으면 합계가 중복 계산되므로 원본(raw=0) 그대로 둔다.
@@ -876,6 +1006,13 @@ function reenrichAll() {
   DB.gender = DB.rawByType.gender || [];
   DB.age = DB.rawByType.age || [];
   DB.placement = DB.rawByType.placement || [];
+  // ADvoost 는 raw 에 브랜드가 들어 있어 광고그룹 조인이 필요 없다.
+  // 다만 카테고리는 네이버 분류(10종)뿐이라, 인덱스의 상품ID→카테고리로 에이전시 분류를 덧씌운다.
+  DB.advoost = (DB.rawByType.advoost || []).map(r => {
+    const m = DB.productByIdId ? DB.productByIdId[r.productId] : null;
+    return m ? Object.assign({}, r, { category: m.category || "", productName: r.productName || m.productName || "" })
+             : Object.assign({}, r, { category: "" });
+  });
   // 브랜드 필터 목록은 인덱스에 정의된 전체 브랜드 기준으로 만든다 (DAILY 행 유무로만 만들면,
   // 해당 기간에 노출·활동이 없어 raw에 아예 안 잡힌 브랜드가 필터에서 통째로 사라지는 문제가 있었음).
   const brandSet = new Set();
@@ -963,6 +1100,8 @@ function renderTabs() {
   const activeGroup = groupOf(STATE.tab);
   TAB_GROUPS.forEach(g => {
     if (g.children && !g.children.some(subtabShow)) return;
+    // ADvoost 는 데이터가 올라온 계정에서만 탭을 띄운다
+    if (g.key === "advoost" && !(DB.advoost || []).length) return;
     const b = document.createElement("button");
     b.className = "tab" + (activeGroup && activeGroup.key === g.key ? " on" : "");
     b.innerHTML = `<span class="ic">${g.i}</span>${g.l}` + (g.children ? ` <span style="font-size:9px">▾</span>` : "");
@@ -989,6 +1128,7 @@ function setTab(t) {
 function renderActive() {
   ({ overview: renderOverview, weekly: renderWeekly, campaign: renderCampaign,
     keyword: renderKeyword, material: renderMaterial, query: renderQuery, placement: renderPlacement, demo: renderDemo,
+    advoost: renderAdvoost,
     report: renderReport }[STATE.tab] || function () {})();
 }
 function renderBrandChips() {
@@ -1030,6 +1170,18 @@ function renderOverview() {
     const p = Math.round(diff / Math.abs(prev) * 100), up = diff > 0, good = up === hg;
     return ` <span class="kdelta ${good ? "up" : "dn"}">${up ? "▲" : "▼"}${Math.abs(p)}%</span>`;
   };
+  // ADvoost 는 브랜드 집계에 섞지 않으므로, 총액이 비어 보이지 않게 개요에 따로 알린다.
+  const advIn = (DB.advoost || []).filter(x => inR(x.d));
+  const advBox = document.getElementById("advNotice");
+  if (advBox) {
+    if (advIn.length) {
+      const A = sumRows(advIn);
+      advBox.style.display = "";
+      advBox.innerHTML = `🚀 <b>ADvoost 쇼핑</b>은 노출(CPM) 과금이라 위 집계와 <b>별도</b>입니다 — `
+        + `같은 기간 광고비 <b>${won(A.cost)}</b> · 광고매출 <b>${won(A.convRevenue)}</b> · ROAS <b>${roasF(A.roas)}</b> `
+        + `<a href="javascript:setTab('advoost')" style="color:var(--accent)">ADvoost 탭에서 보기 →</a>`;
+    } else advBox.style.display = "none";
+  }
   document.getElementById("kpiCap").textContent = pr
     ? `${pr.curFrm}~${pr.curTo}(${pr.len}일) vs 전 기간 ${pr.frm}~${pr.to}${pr.full ? "" : " · 일부만 로드됨"} 대비 증감`
     : "비교할 이전 기간이 없습니다";
@@ -1358,6 +1510,132 @@ function renderPlacement() {
 function sortPlace(k) { tog(STATE.placeSort, k); renderPlacement(); }
 
 /* =========================================================================
+   ADvoost 쇼핑 탭
+   노출(CPM) 과금이라 검색광고와 성격이 달라 브랜드 집계에 섞지 않고 여기서만 본다.
+   전환·매출은 쇼핑검색과 같은 '구매완료' 기준. 장바구니는 상단 퍼널 기여로 따로 표시한다.
+   상단 브랜드/캠페인유형 필터는 적용하지 않는다 — 이 상품엔 캠페인유형 개념이 없고,
+   브랜드는 이 탭 안의 '브랜드별' 보기로 보는 구조이기 때문이다.
+   ========================================================================= */
+function setAdvSeg(k) {
+  STATE.advSeg = k;
+  ["brand", "product", "group", "category", "campaign", "daily"].forEach(x => {
+    const b = document.getElementById("advSeg" + x.charAt(0).toUpperCase() + x.slice(1));
+    if (b) b.classList.toggle("on", x === k);
+  });
+  renderAdvoost();
+}
+function sortAdv(k) { tog(STATE.advSort, k); renderAdvoost(); }
+
+const ADV_SEG = {
+  brand:    { label: "브랜드",   key: r => r.brand || "미분류",    extra: r => ({ _k: r.brand || "미분류", _key: r.brand || "미분류" }) },
+  product:  { label: "상품",     key: r => r.productId,            extra: r => ({ _k: r.productName || r.productId, _key: r.productId }) },
+  group:    { label: "대분류",   key: r => catGroupOf(r.category),  extra: r => ({ _k: catGroupOf(r.category), _key: catGroupOf(r.category) }) },
+  category: { label: "카테고리", key: r => r.category || "미분류", extra: r => ({ _k: r.category || "미분류", _key: r.category || "미분류" }) },
+  campaign: { label: "캠페인",   key: r => r.campaign,             extra: r => ({ _k: r.campaign, _key: r.campaign }) },
+  daily:    { label: "날짜",     key: r => r.d,                    extra: r => ({ _k: r.d, _key: r.d }) }
+};
+
+function advRows() {
+  return (DB.advoost || []).filter(r => inR(r.d));
+}
+
+function renderAdvoost() {
+  const host = document.getElementById("advTable");
+  if (!host) return;
+  const src = advRows();
+  if (!src.length) {
+    document.getElementById("advCount").textContent = 0;
+    document.getElementById("advKpis").innerHTML =
+      `<div class="note" style="grid-column:1/-1">선택한 기간에 ADvoost 데이터가 없습니다. ADvoost 리포트(상세본)를 업로드해 주세요.</div>`;
+    host.innerHTML = "";
+    [charts.advBrand, charts.advDaily].forEach(c => c && c.destroy());
+    charts.advBrand = charts.advDaily = null;
+    return;
+  }
+
+  // ---- KPI (구매완료 기준 + 장바구니 보조) ----
+  const T = sumRows(src);
+  const cart = src.reduce((a, r) => a + (+r.cart || 0), 0);
+  const cartRev = src.reduce((a, r) => a + (+r.cartRevenue || 0), 0);
+  const cpm = T.imp > 0 ? T.cost / T.imp * 1000 : 0;
+  const kpi = (t, v, s) => `<div class="kpi"><div class="t">${t}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
+  document.getElementById("advKpis").innerHTML =
+    kpi("광고비", won(T.cost), "부가세 제외(공급가액) · 검색광고와 별도 집행") +
+    kpi("노출 / 클릭", num(T.imp) + " / " + num(T.clk), `CTR ${T.ctr.toFixed(2)}% · CPM ${won(cpm)}`) +
+    kpi("구매완료", num(T.conv) + "건", `전환율 ${T.cvr.toFixed(1)}% · CPC ${won(T.cpc)}`) +
+    kpi("광고매출", wonM(T.convRevenue), `ROAS ${roasF(T.roas)} · 구매완료 기준`) +
+    kpi("장바구니", num(cart) + "건", `${wonM(cartRev)} · 상단 퍼널 기여(참고)`);
+
+  // ---- 차트: 브랜드 비중 / 일자별 추이 ----
+  const byBrand = groupSum(src, r => r.brand || "미분류", r => ({ _k: r.brand || "미분류" }))
+    .sort((a, b) => b.cost - a.cost);
+  const elB = document.getElementById("chartAdvBrand");
+  if (charts.advBrand) charts.advBrand.destroy();
+  if (elB && byBrand.length) {
+    const pal = ["#03C75A", "#2563EB", "#B45309", "#7C3AED", "#DB2777", "#0891B2", "#CA8A04", "#4B5563"];
+    charts.advBrand = new Chart(elB, {
+      type: "doughnut",
+      data: { labels: byBrand.map(x => x._k), datasets: [{ data: byBrand.map(x => x.cost), backgroundColor: byBrand.map((x, i) => pal[i % pal.length]), borderWidth: 2, borderColor: "#fff" }] },
+      options: { responsive: true, maintainAspectRatio: false, cutout: "58%", plugins: { legend: { position: "bottom", labels: { font: { size: 10 }, boxWidth: 10 } }, tooltip: { callbacks: { label: c => ` ${c.label} ${won(c.raw)}` } } } }
+    });
+  }
+  const byDate = groupSum(src, r => r.d, r => ({ _k: r.d })).sort((a, b) => a._k < b._k ? -1 : 1);
+  const elD = document.getElementById("chartAdvDaily");
+  if (charts.advDaily) charts.advDaily.destroy();
+  if (elD && byDate.length) {
+    charts.advDaily = new Chart(elD, {
+      data: {
+        labels: byDate.map(x => x._k.slice(5)),
+        datasets: [
+          { type: "bar", label: "광고비", data: byDate.map(x => Math.round(x.cost)), backgroundColor: "#03C75A", yAxisID: "y", order: 2 },
+          { type: "line", label: "ROAS", data: byDate.map(x => Math.round(x.roas * 100)), borderColor: "#B45309", backgroundColor: "#B45309", yAxisID: "y1", tension: .3, order: 1 }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: "bottom", labels: { font: { size: 10 }, boxWidth: 10 } } },
+        scales: { y: { ticks: { font: { size: 10 }, callback: v => wonM(v) } }, y1: { position: "right", grid: { drawOnChartArea: false }, ticks: { font: { size: 10 }, callback: v => v + "%" } }, x: { ticks: { font: { size: 10 } } } }
+      }
+    });
+  }
+
+  // ---- 표 ----
+  const seg = ADV_SEG[STATE.advSeg] || ADV_SEG.brand;
+  // 장바구니는 groupSum 이 모르는 필드라, 같은 키로 한 번 더 합산해 붙인다.
+  const cartBy = {};
+  src.forEach(r => {
+    const k = String(seg.key(r));
+    const e = cartBy[k] || (cartBy[k] = { cart: 0, rev: 0 });
+    e.cart += +r.cart || 0; e.rev += +r.cartRevenue || 0;
+  });
+  let g = groupSum(src, seg.key, seg.extra).map(o => {
+    const e = cartBy[String(o._key)] || { cart: 0, rev: 0 };
+    return Object.assign(o, { _cart: e.cart, _cartRev: e.rev });
+  });
+  g = STATE.advSeg === "daily" ? g.sort((a, b) => a._k < b._k ? -1 : 1) : sortArr(g, STATE.advSort);
+  document.getElementById("advCount").textContent = g.length;
+
+  const cellsOf = o => `<td class="n">${num(o.imp)}</td><td class="n">${num(o.clk)}</td>`
+    + `<td class="n">${(o.ctr || 0).toFixed(2)}%</td>`
+    + `<td class="n">${won(o.imp > 0 ? o.cost / o.imp * 1000 : 0)}</td>`
+    + `<td class="n">${won(o.cost)}</td><td class="n">${won(o.cpc)}</td>`
+    + `<td class="n">${num(o.conv)}</td><td class="n">${(o.cvr || 0).toFixed(1)}%</td>`
+    + `<td class="n">${won(o.convRevenue)}</td><td class="n"><b>${roasF(o.roas)}</b></td>`
+    + `<td class="n">${num(o._cart || 0)}</td><td class="n">${won(o._cartRev || 0)}</td>`;
+  const head = `<thead><tr><th class="l">${seg.label}</th>`
+    + `<th>노출</th><th>클릭</th><th>CTR</th><th>CPM</th><th>광고비</th><th>CPC</th>`
+    + `<th>구매완료</th><th>전환율</th><th>광고매출</th><th>ROAS</th>`
+    + `<th>장바구니</th><th>장바구니 매출</th></tr></thead>`;
+  const body = g.length
+    ? g.map(o => `<tr><td class="l"><span class="nm">${escH(String(o._k))}</span></td>${cellsOf(o)}</tr>`).join("")
+    : `<tr><td class="l" colspan="13" style="color:var(--faint)">데이터가 없습니다.</td></tr>`;
+  const tot = Object.assign({}, T, { _cart: cart, _cartRev: cartRev });
+  host.innerHTML = head + `<tbody>${body}`
+    + `<tr class="tot"><td class="l">합계</td>${cellsOf(tot)}</tr></tbody>`;
+}
+
+
+/* =========================================================================
    검색어 탭 (쇼핑검색)
    ========================================================================= */
 function renderQuery() {
@@ -1660,7 +1938,9 @@ function applyLoadedData(data, frm, to) {
   DB.rawByType.adMaterial = expandTable(data.adMaterial).map(coerceNumericRow);
   DB.rawByType.shoppingQuery = expandTable(data.shoppingQuery).map(coerceNumericRow);
   DB.rawByType.placement = expandTable(data.placement).map(coerceNumericRow);
+  DB.rawByType.advoost = expandTable(data.advoost).map(coerceNumericRow);
   DB.indexMapRaw = data.indexMap || [];
+  DB.productMasterRaw = data.productMaster || [];
   DB.indexByKey = buildIndexByKey(DB.indexMapRaw);
   DB.brandContractsRaw = (data.brandContracts || []).map(c => Object.assign({}, c, { amount: Number(c.amount) || 0, dailyRate: Number(c.dailyRate) || 0 }));
   // dataFrm/dataTo = 시트에 실제로 존재하는 전체 기간(요청한 frm/to로 잘리지 않은 진짜 범위).
@@ -1720,7 +2000,8 @@ function applyBatch(batch) {
   if (batch.indexMap) DB.indexMapRaw = batch.indexMap;
   DB.indexByKey = buildIndexByKey(DB.indexMapRaw);
   if (batch.brandContracts) DB.brandContractsRaw = batch.brandContracts;
-  ["daily", "gender", "age", "keyword", "adMaterial", "shoppingQuery", "placement"].forEach(k => { if (batch[k]) DB.rawByType[k] = batch[k]; });
+  if (batch.productMaster) DB.productMasterRaw = batch.productMaster;
+  ["daily", "gender", "age", "keyword", "adMaterial", "shoppingQuery", "placement", "advoost"].forEach(k => { if (batch[k]) DB.rawByType[k] = batch[k]; });
   reenrichAll(); recomputeMetaRange(); clampRange(); syncRangeInputs(); syncHeader();
   renderTabs(); renderActive();
 }
@@ -1744,6 +2025,9 @@ async function onFiles(fileList) {
           if (looksLikeBrandContractSheet(cRows)) {
             batch.brandContracts = parseBrandContracts(cRows);
             msgs.push("✅ 브랜드검색 단가표 " + batch.brandContracts.length.toLocaleString() + "건");
+          } else if (looksLikeProductSheet(cRows)) {
+            batch.productMaster = parseProductMaster(cRows);
+            msgs.push("✅ 상품 마스터 " + batch.productMaster.length.toLocaleString() + "개");
           }
         }
       } else {
@@ -1752,8 +2036,26 @@ async function onFiles(fileList) {
         const nl = text.indexOf("\n");
         const titleLine = (nl >= 0 ? text.slice(0, nl) : text).trim();
         const rest = nl >= 0 ? text.slice(nl + 1) : "";
-        const kind = classifyTitle(titleLine);
-        if (!kind) { msgs.push("⚠️ " + file.name + ": 인식 불가"); continue; }
+        let kind = classifyTitle(titleLine);
+        if (!kind) {
+          // ADvoost 는 1행이 바로 헤더다 — 제목으로 못 가리므로 헤더 구성으로 판별한다.
+          const head = Papa.parse(titleLine).data[0] || [];
+          const adv = classifyAdvoostHeader(head.map(x => String(x).trim()));
+          if (adv === "ADVOOST_SUMMARY") {
+            msgs.push("⛔ " + file.name + ": ADvoost <b>요약본</b>입니다. 구매완료가 분리돼 있지 않아 "
+              + "ROAS가 4배가량 부풀려집니다. 전환 상세 컬럼이 포함된 <b>상세본</b>으로 다시 받아주세요.");
+            continue;
+          }
+          if (adv === "ADVOOST") {
+            const ar = Papa.parse(text, { header: true, skipEmptyLines: true }).data;
+            batch.advoost = parseAdvoost(ar);
+            const ds = batch.advoost.map(r => r.d).filter(Boolean).sort();
+            if (ds.length) periods.ADVOOST = { frm: ds[0], to: ds[ds.length - 1] };
+            msgs.push("✅ ADVOOST " + batch.advoost.length.toLocaleString() + "행");
+            continue;
+          }
+          msgs.push("⚠️ " + file.name + ": 인식 불가"); continue;
+        }
         const meta = extractMeta(titleLine);
         if (meta) { periods[kind] = meta; if (meta.mediaNo !== MEDIA_NO) mediaMismatch = true; }
         const parsed = Papa.parse(rest, { header: true, skipEmptyLines: true });
@@ -2383,7 +2685,8 @@ function saCoverSheet(ws, brand, meta, indexRows) {
   };
   kv("광고주 명", "아모레퍼시픽", brand);
   kv("매체 계정", "아모레헤어앤뷰티 (2061142)");
-  if (meta.present && meta.present.length) kv("집행 광고상품", meta.present.join(" · "));
+  if (meta.present && meta.present.length) kv("집행 광고상품", meta.present.join(" · ") + (meta.adv ? "  (+ ADvoost 쇼핑 · 별도)" : ""));
+  else if (meta.adv) kv("집행 광고상품", "ADvoost 쇼핑");
   kv("광고비 기준", saVatIncluded() ? "부가세 포함 (원본 총비용)" : "공급가액 (부가세 제외) — 정산서 기준");
   kv("보고서 기간", meta.frm, meta.to);
   // 숫자 서식은 값이 들어간 칸(4열)에 걸어야 한다. 3열은 라벨 칸이라 여기에 걸면 서식이 먹지 않는다.
@@ -2395,6 +2698,11 @@ function saCoverSheet(ws, brand, meta, indexRows) {
   ws.getCell(r - 1, 4).numFmt = SA_FMT.roas;
   kv("경과율", meta.pace);
   ws.getCell(r - 1, 4).numFmt = "0.0%";
+  if (meta.adv) {
+    // ADvoost 는 노출(CPM) 과금이라 위 소진액(SA 기준)에 더하지 않는다. 금액만 따로 적어 둔다.
+    kv("ADvoost 쇼핑 (별도)", saCost(meta.adv.cost), "위 소진액 미포함");
+    ws.getCell(r - 1, 4).numFmt = SA_FMT.won;
+  }
   kv("생성일시", meta.now);
   r++;
 
@@ -2439,7 +2747,8 @@ function saCoverSheet(ws, brand, meta, indexRows) {
       ? "· 금액은 원본 리포트의 총비용(부가세 포함) 기준입니다."
       : "· 금액은 공급가액(부가세 제외) 기준입니다 — 정산서와 같은 기준입니다.",
     "· 브랜드검색/신제품검색은 정액 계약이라 원본 광고비가 0으로 집계되어, 계약 단가를 계약기간 일수로 나눠 일할 반영했습니다.",
-    "· 검색어 시트는 광고비가 발생한 검색어만 포함하므로 노출수 합계가 기간요약보다 작습니다.",
+    "· 검색어 시트는 검색 매체(네이버 통합검색 등)에서 클릭이 발생한 검색어만 담깁니다. "
+    + "콘텐츠 매체(제휴 지면)는 검색어가 없어 클릭·광고비가 통째로 빠지고, 클릭 없는 노출도 빠지므로 기간요약 합계와 다릅니다.",
     "· 방문당 페이지뷰·체류시간은 원본 리포트에서도 제공되지 않아 제외했습니다.",
     "· 파생지표(ROAS·클릭률·전환율·CPC 등)는 수식으로 들어가 있어 값 편집 시 자동 재계산됩니다.",
     "· 차트는 원본과 동일한 구성(막대+선 이중축)으로 넣었으나 이미지로 삽입되어, 셀 값 편집 시 자동 갱신되지는 않습니다."
@@ -2711,19 +3020,21 @@ function saBuildBrandWorkbook(brand) {
   const inBrand = arr => (arr || []).filter(x => x.brand === brand && inR(x.d));
   const byType = (arr, t) => inBrand(arr).filter(x => x.campaignType === t);
 
-  const dailyAll = inBrand(DB.daily);
-  if (!dailyAll.length) return null;
-  const saDaily = dailyAll.filter(x => SA_TYPES.indexOf(x.campaignType) >= 0);
-  if (!saDaily.length) return null;
+  const saDaily = inBrand(DB.daily).filter(x => SA_TYPES.indexOf(x.campaignType) >= 0);
+  // ADvoost 만 집행한 브랜드(또는 SA가 없는 기간)도 리포트를 받을 수 있어야 하므로
+  // 둘 다 비어 있을 때만 포기한다. 아래 SA 시트들은 present 가 비면 통째로 건너뛴다.
+  const advAll = (DB.advoost || []).filter(x => x.brand === brand && inR(x.d));
+  if (!saDaily.length && !advAll.length) return null;
   const present = SA_TYPES.filter(t => saDaily.some(r => r.campaignType === t));
 
-  const total = sumRows(saDaily);
+  const total = sumRows(saDaily.length ? saDaily : advAll);
   const [y, m, d] = STATE.to.split("-").map(Number);
   const dim = new Date(y, m, 0).getDate();
   const now = new Date(); const pad = n => String(n).padStart(2, "0");
   const meta = {
     frm: STATE.frm, to: STATE.to, total, present,
     pace: Math.min(1, d / dim),
+    adv: null,   // 아래에서 ADvoost 집계가 있으면 채운다
     now: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`
   };
 
@@ -2755,7 +3066,7 @@ function saBuildBrandWorkbook(brand) {
   const tags = present.map(t => SA_TAG[t]).join("+");
   const comboName = "0." + tags + "_요약";
   const comboTitle = "네이버 " + present.join("+") + " SA 성과 요약";
-  {
+  if (present.length) {
     const ws = saNewSheet(wb, comboName, brand, comboTitle, "SA 전체", F, T);
     let r = saMonthlyBlock(wb, ws, 4, saDaily);
     if (present.length > 1) {
@@ -2920,6 +3231,69 @@ function saBuildBrandWorkbook(brand) {
     }
   });
 
+  /* ---- V. ADvoost 쇼핑 ----
+     노출(CPM) 과금이고 집계 단위가 '상품'이라 SA(검색) 합계에 섞지 않는다.
+     표지의 총 광고비도 SA 기준 그대로 두고, 여기 시트에서만 따로 본다. */
+  if (advAll.length) {
+    meta.adv = sumRows(advAll);
+    const advSub = "ADvoost 쇼핑 (CPM · SA와 별도 집행)";
+    const bdV = byDateOf(advAll);
+    const campV = g(advAll, o => o.campaign, o => ({ campaign: o.campaign }));
+
+    {   // V_기간요약
+      const ws = saNewSheet(wb, "V_기간요약", brand, "네이버 ADvoost 쇼핑 기간 성과 요약", advSub, F, T);
+      let r = saMonthlyBlock(wb, ws, 4, advAll);
+      if (campV.length > 1) {
+        r = saBlock(wb, ws, r, "캠페인별 성과", [{ h: "캠페인", w: 34, get: o => o.campaign }], campV,
+                    { band: true, share: true, shareLabel: o => o.campaign });
+      }
+      if (bdV.length) r = saBlock(wb, ws, r, "일자별 성과", dateLbl, bdV, { charts: dailyCharts(bdV) });
+      made.push(["V_기간요약", "ADvoost 쇼핑 캠페인별 · 일자별 성과 (SA 합계와 별도)"]);
+    }
+
+    {   // V_상품성과
+      const prodV = g(advAll, o => o.productId,
+                      o => ({ productId: o.productId, productName: o.productName, category: o.category }));
+      // 세부 카테고리는 상품 1~2개짜리가 절반이라 차트가 읽히지 않는다.
+      // 차트는 대분류로 묶어 보여 주고, 세부 카테고리는 표로만 이어 붙인다.
+      const grpV = g(advAll, o => catGroupOf(o.category), o => ({ group: catGroupOf(o.category) }));
+      const catV = g(advAll, o => o.category || "미분류", o => ({ category: o.category || "미분류" }));
+      const ws = saNewSheet(wb, "V_상품성과", brand, "네이버 ADvoost 쇼핑 상품별 성과", advSub, F, T);
+      let r = 4;
+      if (grpV.length) {
+        r = saBlock(wb, ws, r, "대분류별 성과", [{ h: "대분류", w: 24, get: o => o.group }], grpV, {
+          band: true, share: true, shareLabel: o => o.group,
+          charts: [
+            saComboCfg("대분류별 광고비 & 광고수익률", grpV.map(o => o.group), "광고비", grpV.map(o => saCost(o.cost)),
+                       "광고수익률", grpV.map(o => saCost(o.cost) ? o.convRevenue / saCost(o.cost) : 0), { linePct: true }),
+            saBarCfg("대분류별 광고비 비중", grpV.map(o => o.group), "광고비", grpV.map(o => saCost(o.cost)), { doughnut: true })
+          ]
+        });
+      }
+      if (catV.length > 1) {
+        r = saBlock(wb, ws, r, "카테고리별 성과 (세부)",
+          [{ h: "대분류", w: 16, get: o => catGroupOf(o.category) },
+           { h: "카테고리", w: 24, get: o => o.category }], catV, { band: true });
+      }
+      r = saBlock(wb, ws, r, "상품 TOP 합계 및 비중", [{ h: "구분", w: 18.4, get: o => o._top }], saTopRows(prodV),
+                  { total: false, share: true, shareBase: sumRows(prodV), shareLabel: o => o._top });
+      const topV = prodV.slice(0, 10);
+      const nmV = o => (o.productName || o.productId || "").slice(0, 18);
+      r = saBlock(wb, ws, r, "상품 전체",
+        [{ h: "상품ID", w: 16, get: o => o.productId || "" },
+         { h: "상품명", w: 46, get: o => o.productName || "" },
+         { h: "대분류", w: 14, get: o => catGroupOf(o.category) },
+         { h: "카테고리", w: 18, get: o => o.category || "" }], prodV, {
+          band: true, charts: [
+            saComboCfg("상품 TOP10 광고비 & 광고수익률", topV.map(nmV), "광고비", topV.map(o => saCost(o.cost)),
+                       "광고수익률", topV.map(o => saCost(o.cost) ? o.convRevenue / saCost(o.cost) : 0), { linePct: true }),
+            saBarCfg("상품 TOP10 광고비 비중", topV.map(nmV), "광고비", topV.map(o => saCost(o.cost)), { doughnut: true })
+          ]
+        });
+      made.push(["V_상품성과", "ADvoost 쇼핑 대분류별 · 카테고리별 · 상품별 성과 (전환은 구매완료 기준)"]);
+    }
+  }
+
   saCoverSheet(coverWs, brand, meta, made);
   return wb;
 }
@@ -2943,7 +3317,8 @@ const DUMP_COLS = {
   placement:     ["d", "campaignType", "brand", "media", "imp", "clk", "cost", "costIncl", "conv", "convRevenue", "avgRank"],
   keyword:       ["d", "campaignType", "campaign", "adgroup", "keyword", "imp", "clk", "cost", "costIncl", "conv", "convRevenue", "avgRank", "brand", "category", "productId", "productName"],
   adMaterial:    ["d", "campaignType", "campaign", "adgroup", "adMaterialId", "imp", "clk", "cost", "costIncl", "conv", "convRevenue", "avgRank", "brand", "category", "productId", "productName"],
-  shoppingQuery: ["d", "campaignType", "campaign", "adgroup", "query", "imp", "clk", "cost", "costIncl", "conv", "convRevenue", "avgRank", "brand", "category", "productId", "productName"]
+  shoppingQuery: ["d", "campaignType", "campaign", "adgroup", "query", "imp", "clk", "cost", "costIncl", "conv", "convRevenue", "avgRank", "brand", "category", "productId", "productName"],
+  advoost:       ["d", "campaign", "productId", "nvProductId", "brand", "productName", "category", "nvCategory", "imp", "clk", "cost", "costIncl", "conv", "convRevenue", "cart", "cartRevenue", "totConv", "totRevenue"]
 };
 
 function exportSheetDump() {
@@ -2974,6 +3349,7 @@ function exportSheetDump() {
       n += rows.length;
     }
     out.indexMap = DB.indexMapRaw || [];
+    out.productMaster = DB.productMasterRaw || [];
     out.brandContracts = (DB.brandContractsRaw || []).map(c => Object.assign({}, c, {
       amount: conv(c.amount), dailyRate: vatIncluded ? (c.dailyRate || 0) * VAT_RATE : (c.dailyRate || 0)
     }));
