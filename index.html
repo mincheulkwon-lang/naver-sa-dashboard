@@ -951,11 +951,30 @@ function applyBrandContractCost(row) {
   return Object.assign({}, row, { cost: rate, costIncl: rate * VAT_RATE, costSource: "contract" });
 }
 
+/* 인덱스에 아직 없는 광고그룹 구제 —
+   쇼핑검색 광고그룹명은 보통 "{상품ID}_..." 로 시작한다. 새 광고그룹이 만들어지고 인덱스.xlsx 가
+   갱신되기 전까지 그 행이 통째로 '미분류'로 빠지는 일이 반복돼(2026-09, 10-11 실측) 상품ID로 구제한다.
+   다만 이름에 ID가 잘려 들어간 경우가 있어(예: "64531734극손상트릿" ← 실제 6453173460)
+   **앞 숫자가 알려진 상품ID와 정확히 같을 때만** 쓴다. 접두 일치로 넓히면 엉뚱한 상품에 붙는다.
+   인덱스가 있으면 언제나 인덱스가 우선이고, 이건 없을 때만 도는 보조 경로다. */
+function guessByAdgroupPid(adgroup) {
+  const m = String(adgroup || "").match(/^(\d+)/);
+  if (!m) return null;
+  const p = DB.productByIdId ? DB.productByIdId[m[1]] : null;
+  return (p && (p.brand || p.category)) ? Object.assign({ productId: m[1] }, p) : null;
+}
 function enrich(rows, idxMap, applyBrand) {
   return rows.map(r => {
     const j = idxMap[r.campaign + "|" + r.adgroup];
     let out;
-    if (!j) out = Object.assign({}, r, { brand: "미분류", category: "미분류", productId: null, productName: null, unmatched: true });
+    if (!j) {
+      const g = guessByAdgroupPid(r.adgroup);
+      out = g
+        ? Object.assign({}, r, { brand: g.brand || "미분류", category: g.category || "미분류",
+                                 productId: g.productId, productName: g.productName || null,
+                                 unmatched: false, viaProductId: true })
+        : Object.assign({}, r, { brand: "미분류", category: "미분류", productId: null, productName: null, unmatched: true });
+    }
     else { const hasProduct = j.productId || j.productName || j.category; out = Object.assign({}, r, { brand: j.brand || "미분류", category: hasProduct ? (j.category || "미분류") : "브랜드 통합", productId: j.productId, productName: j.productName, unmatched: false }); }
     return applyBrand ? applyBrandContractCost(out) : out;
   });
@@ -963,11 +982,19 @@ function enrich(rows, idxMap, applyBrand) {
 // 성별·연령·지면은 화면에서 (성별/연령대/매체)로만 합산해 보여주고 광고그룹 단위를 쓰지 않는다.
 // 그래서 업로드 직전에 (날짜×캠페인유형×브랜드×차원)으로 미리 합쳐 저장한다 — raw 대비 90%+ 감소하며
 // 화면 숫자는 동일하다. 브랜드는 인덱스(campaign|adgroup→brand)로 매핑, avgRank는 노출 가중평균으로 합산.
-function aggregateToBrand(rows, dimField, idxByKey) {
+function aggregateToBrand(rows, dimField, idxByKey, pidMap) {
   const m = {};
   (rows || []).forEach(r => {
     const j = idxByKey ? idxByKey[r.campaign + "|" + r.adgroup] : null;
-    const brand = (j && j.brand) ? j.brand : "미분류";
+    // 여기서 '미분류'로 접히면 시트에 그대로 굳어 되돌릴 수 없다(원본 광고그룹이 사라짐).
+    // 그래서 enrich 와 같은 상품ID 보조 경로를 업로드 시점에도 태운다.
+    let brand = (j && j.brand) ? j.brand : "";
+    if (!brand && pidMap) {
+      const mm = String(r.adgroup || "").match(/^(\d+)/);
+      const p = mm ? pidMap[mm[1]] : null;
+      if (p && p.brand) brand = p.brand;
+    }
+    if (!brand) brand = "미분류";
     const dim = r[dimField] !== undefined && r[dimField] !== null ? r[dimField] : "";
     const key = r.d + "|" + r.campaignType + "|" + brand + "|" + dim;
     let o = m[key];
@@ -985,15 +1012,17 @@ function buildProductById(idxRows, masterRows) {
   (idxRows || []).forEach(r => {
     const p = String(r.productId || "").trim();
     if (!p) return;
-    const e = m[p] || (m[p] = { category: "", productName: "" });
+    const e = m[p] || (m[p] = { category: "", productName: "", brand: "" });
     if (!e.category && r.category) e.category = r.category;
     if (!e.productName && r.productName) e.productName = r.productName;
+    if (!e.brand && r.brand) e.brand = r.brand;
   });
   // 상품 마스터가 있으면 그 값이 정본 (ADvoost 전용 상품은 여기에만 있다)
   (masterRows || []).forEach(r => {
-    const e = m[r.productId] || (m[r.productId] = { category: "", productName: "" });
+    const e = m[r.productId] || (m[r.productId] = { category: "", productName: "", brand: "" });
     if (r.category) e.category = r.category;
     if (r.productName && !e.productName) e.productName = r.productName;
+    if (r.brand) e.brand = r.brand;
   });
   return m;
 }
@@ -1016,8 +1045,12 @@ function reenrichAll() {
   // 시트에는 campaignType 컬럼이 없다. 상단 캠페인유형 칩이 동작하도록 여기서 메모리에만 붙인다.
   DB.advoost = (DB.rawByType.advoost || []).map(r => {
     const m = DB.productByIdId ? DB.productByIdId[r.productId] : null;
-    const add = m ? { category: m.category || "", productName: r.productName || m.productName || "" }
-                  : { category: "" };
+    // 매체 raw 의 '상품 브랜드' 가 비어 오는 상품이 있다(실측 2종). 카테고리와 같은 방식으로
+    // 상품ID → 상품 마스터에서 브랜드를 끌어와 메운다. 없을 때만 '미분류'로 남긴다.
+    const rawBrand = (r.brand && r.brand !== "미분류") ? r.brand : "";
+    const add = m ? { category: m.category || "", productName: r.productName || m.productName || "",
+                      brand: rawBrand || m.brand || "미분류" }
+                  : { category: "", brand: rawBrand || "미분류" };
     return Object.assign({}, r, add, { campaignType: ADV_TYPE });
   });
   // 브랜드 필터 목록은 인덱스에 정의된 전체 브랜드 기준으로 만든다 (DAILY 행 유무로만 만들면,
@@ -2103,9 +2136,12 @@ async function onFiles(fileList) {
   // 성별·연령·지면은 브랜드 단위로 집계해서 저장한다(용량 90%+ 절감, 화면 숫자 동일).
   // 브랜드 매핑은 이번 배치의 인덱스가 있으면 그걸, 없으면 이미 로드된 인덱스를 쓴다.
   const _idxByKey = batch.indexMap ? buildIndexByKey(batch.indexMap) : DB.indexByKey;
-  if (batch.gender) { const n0 = batch.gender.length; batch.gender = aggregateToBrand(batch.gender, "gender", _idxByKey); msgs.push(`↳ 성별 브랜드집계 ${n0.toLocaleString()}→${batch.gender.length.toLocaleString()}행`); }
-  if (batch.age) { const n0 = batch.age.length; batch.age = aggregateToBrand(batch.age, "ageBand", _idxByKey); msgs.push(`↳ 연령 브랜드집계 ${n0.toLocaleString()}→${batch.age.length.toLocaleString()}행`); }
-  if (batch.placement) { const n0 = batch.placement.length; batch.placement = aggregateToBrand(batch.placement, "media", _idxByKey); msgs.push(`↳ 지면 브랜드집계 ${n0.toLocaleString()}→${batch.placement.length.toLocaleString()}행`); }
+  const _pidMap = (batch.indexMap || batch.productMaster)
+    ? buildProductById(batch.indexMap || DB.indexMapRaw, batch.productMaster || DB.productMasterRaw)
+    : DB.productByIdId;
+  if (batch.gender) { const n0 = batch.gender.length; batch.gender = aggregateToBrand(batch.gender, "gender", _idxByKey, _pidMap); msgs.push(`↳ 성별 브랜드집계 ${n0.toLocaleString()}→${batch.gender.length.toLocaleString()}행`); }
+  if (batch.age) { const n0 = batch.age.length; batch.age = aggregateToBrand(batch.age, "ageBand", _idxByKey, _pidMap); msgs.push(`↳ 연령 브랜드집계 ${n0.toLocaleString()}→${batch.age.length.toLocaleString()}행`); }
+  if (batch.placement) { const n0 = batch.placement.length; batch.placement = aggregateToBrand(batch.placement, "media", _idxByKey, _pidMap); msgs.push(`↳ 지면 브랜드집계 ${n0.toLocaleString()}→${batch.placement.length.toLocaleString()}행`); }
   applyBatch(batch);
   const list = document.getElementById("uploadList"); if (list) list.innerHTML = msgs.map(m => `<div>${escH(m)}</div>`).join("");
   gToast(msgs.join(" · ") || "처리할 파일이 없습니다");
