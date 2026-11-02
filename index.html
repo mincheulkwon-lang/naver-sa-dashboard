@@ -668,6 +668,7 @@ const CT_COLOR = { "파워링크": "#2563EB", "쇼핑검색": "#03C75A", "파워
    ========================================================================= */
 let DB = {
   rawByType: { daily: [], gender: [], age: [], keyword: [], adMaterial: [], shoppingQuery: [], placement: [], advoost: [] },
+  advDaily: [],   // ADvoost 를 DAILY 모양으로 바꿔 캐시한 것 (reenrichAll 에서 생성)
   indexMapRaw: [],
   productMasterRaw: [],
   indexByKey: {},
@@ -1053,15 +1054,17 @@ function reenrichAll() {
                   : { category: "", brand: rawBrand || "미분류" };
     return Object.assign({}, r, add, { campaignType: ADV_TYPE });
   });
+  DB.advDaily = buildAdvDaily();
   // 브랜드 필터 목록은 인덱스에 정의된 전체 브랜드 기준으로 만든다 (DAILY 행 유무로만 만들면,
   // 해당 기간에 노출·활동이 없어 raw에 아예 안 잡힌 브랜드가 필터에서 통째로 사라지는 문제가 있었음).
   const brandSet = new Set();
   DB.indexMapRaw.forEach(r => { if (r.brand) brandSet.add(r.brand); });
   DB.daily.forEach(r => brandSet.add(r.brand));
+  advAsDaily().forEach(r => brandSet.add(r.brand));
   DB.brands = Array.from(brandSet).sort((a, b) => (a === "미분류") - (b === "미분류"));
 }
 function recomputeMetaRange() {
-  const ds = Array.from(new Set(DB.daily.map(r => r.d))).sort();
+  const ds = Array.from(new Set(dailyAll().map(r => r.d))).sort();
   DB.meta.days = ds; DB.meta.frm = ds[0] || todayISO(); DB.meta.to = ds[ds.length - 1] || todayISO();
   if (!STATE.frm) STATE.frm = DB.meta.frm;
   if (!STATE.to) STATE.to = DB.meta.to;
@@ -1080,7 +1083,7 @@ function filt(rows) { return rows.filter(passesFilter); }
    광고그룹이 없으므로 캠페인 단위 한 줄로 접고, 상품 단위는 상품 성과 탭에서 따로 본다.
    그래서 productId/productName 은 일부러 비운다 — 캠페인 탭이 첫 상품명을 캠페인 대표명처럼
    붙여 버리는 걸 막기 위해서다. */
-function advAsDaily() {
+function buildAdvDaily() {
   return (DB.advoost || []).map(r => ({
     // 광고그룹이 없어 그 자리에 브랜드를 쓴다. "상품 전체"로 묶으면 캠페인 한 줄에 여러 브랜드가
     // 뭉개져 대표 브랜드명이 틀리게 붙는다(실측 확인). 상품 단위는 상품 성과 탭에서 본다.
@@ -1090,7 +1093,13 @@ function advAsDaily() {
     brand: r.brand || "미분류", category: null, productId: null, productName: null
   }));
 }
-function dailyInRange() { return filt(DB.daily.concat(advAsDaily())).filter(r => inR(r.d)); }
+// reenrichAll 에서 한 번 만들어 둔 것을 돌려준다.
+function advAsDaily() { return DB.advDaily || []; }
+/* 화면·집계가 봐야 하는 '전체 일자별' = 검색광고(DAILY) + ADvoost.
+   DB.daily 를 직접 읽으면 ADvoost 가 빠진다 — 비교기간·주간리포트·캠페인유형 칩이
+   그래서 전부 틀렸었다(2026-11-02: 증감이 계속 '신규'로, ADvoost 칩이 '데이터 없음'으로 흐릿하게). */
+function dailyAll() { return DB.daily.concat(advAsDaily()); }
+function dailyInRange() { return filt(dailyAll()).filter(r => inR(r.d)); }
 function view(t) {
   return Object.assign({}, t, {
     roas: t.cost > 0 ? t.convRevenue / t.cost : 0,
@@ -1194,7 +1203,7 @@ function renderBrandChips() {
 }
 function renderCampTypeChips() {
   const host = document.getElementById("fCampType"); if (!host) return;
-  const present = new Set(DB.daily.map(r => r.campaignType));
+  const present = new Set(dailyAll().map(r => r.campaignType));
   const opts = ["all", ...CAMPAIGN_TYPES];
   host.innerHTML = opts.map(t => { const empty = t !== "all" && !present.has(t); return `<div class="chip ${STATE.filterCampaignType === t ? "on" : ""}${empty ? " empty" : ""}" onclick="setFilterCampaignType('${t}')">${t === "all" ? "전체" : t}</div>`; }).join("");
 }
@@ -1218,7 +1227,7 @@ function renderOverview() {
     <div class="hero-card rev"><div class="ht"><span>광고매출 (전환매출)</span><span class="tag">선택 기간</span></div>
       <div class="hv">${wonM(T.convRevenue)}</div><div class="hsub">광고비 ${won(T.cost)} 투입 · 전환 ${num(T.conv)}건</div></div>`;
   const pr = prevRange();
-  const P = pr ? sumRows(filt(DB.daily).filter(x => x.d >= pr.frm && x.d <= pr.to)) : null;
+  const P = pr ? sumRows(filt(dailyAll()).filter(x => x.d >= pr.frm && x.d <= pr.to)) : null;
   const dch = (cur, prev, hg) => {
     if (prev == null) return "";
     if (prev === 0) return cur > 0 ? ` <span class="kdelta up">신규</span>` : "";
@@ -1300,7 +1309,7 @@ function renderRail(T) {
     <p>현재 페이스로 월말 예상<br>· 광고비 <b>${wonM(proj(T.cost))}</b><br>· 광고매출 <b>${wonM(proj(T.convRevenue))}</b><br>· 전환 <b>${num(Math.round(proj(T.conv)))}건</b></p></div></div>`;
 }
 function renderChartDaily() {
-  const rows = filt(DB.daily).filter(r => inR(r.d));
+  const rows = filt(dailyAll()).filter(r => inR(r.d));
   const byDate = groupSum(rows, r => r.d, r => ({ d: r.d })).sort((a, b) => a.d < b.d ? -1 : 1);
   const labels = byDate.map(x => x.d.slice(5)), sp = byDate.map(x => x.cost), rv = byDate.map(x => x.convRevenue), ro = byDate.map(x => Math.round(x.roas * 100));
   if (charts.daily) charts.daily.destroy();
@@ -1338,12 +1347,12 @@ function showEmptyState() {
 /* =========================================================================
    주간 리포트
    ========================================================================= */
-function allWeeks() { return Array.from(new Set(DB.daily.map(x => mondayOf(x.d)))).sort().reverse(); }
+function allWeeks() { return Array.from(new Set(dailyAll().map(x => mondayOf(x.d)))).sort().reverse(); }
 function curWeek() { const ws = allWeeks(); if (!ws.length) return null; return (STATE.weekSel && ws.includes(STATE.weekSel)) ? STATE.weekSel : ws[0]; }
 function inWeek(d, mon) { return d >= mon && d <= addDaysS(mon, 6); }
 function fmtWeekRange(mon) { return mon.replace(/-/g, ".").slice(2) + "~" + addDaysS(mon, 6).replace(/-/g, ".").slice(5); }
-function weekSum(mon) { return sumRows(filt(DB.daily).filter(x => inWeek(x.d, mon))); }
-function weekCampAdgroups(mon) { return groupSum(filt(DB.daily).filter(x => inWeek(x.d, mon)), r => r.campaign + "|" + r.adgroup, r => ({ campaign: r.campaign, adgroup: r.adgroup, brand: r.brand, campaignType: r.campaignType, productName: r.productName })); }
+function weekSum(mon) { return sumRows(filt(dailyAll()).filter(x => inWeek(x.d, mon))); }
+function weekCampAdgroups(mon) { return groupSum(filt(dailyAll()).filter(x => inWeek(x.d, mon)), r => r.campaign + "|" + r.adgroup, r => ({ campaign: r.campaign, adgroup: r.adgroup, brand: r.brand, campaignType: r.campaignType, productName: r.productName })); }
 function setWeek(v) { STATE.weekSel = v; renderWeekly(); }
 function renderWeekly() {
   const ws = allWeeks(); const sel = document.getElementById("weekSel");
