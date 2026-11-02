@@ -1062,7 +1062,8 @@ function reenrichAll() {
   const brandSet = new Set();
   DB.indexMapRaw.forEach(r => { if (r.brand) brandSet.add(r.brand); });
   DB.daily.forEach(r => brandSet.add(r.brand));
-  advAsDaily().forEach(r => brandSet.add(r.brand));
+  // ADvoost 브랜드는 여기에 넣지 않는다 — 브랜드 칩은 '브랜드별 정산' 축이고 ADvoost 는 그 축에
+  // 속하지 않으므로, 넣으면 눌러도 0행인 빈 칩이 생긴다(퍼즐우드 때문에 '미분류' 칩이 그랬다).
   DB.brands = Array.from(brandSet).sort((a, b) => (a === "미분류") - (b === "미분류"));
 }
 function recomputeMetaRange() {
