@@ -329,6 +329,7 @@ footer{padding:26px;color:var(--faint);font-size:11px;text-align:center;border-t
     <div class="gnb-right">
       <button class="upl" id="xlBtn" onclick="exportExcelReport()" title="현재 기간·필터 기준 엑셀 리포트 다운로드">⬇ 엑셀</button>
       <button class="upl" id="saBtn" onclick="exportSaBrandReports()" title="광고주 제출용 브랜드별 월간 리포트 (브랜드 필터가 전체면 전 브랜드 ZIP)">📑 브랜드별 리포트</button>
+      <button class="upl" id="advBtn" onclick="exportAdvoostReport()" title="ADvoost 쇼핑 통합 리포트 (브랜드 필터와 무관하게 기간 전체)">🚀 ADvoost 리포트</button>
       <select class="upl" id="dumpVat" title="덤프에 담을 광고비 기준. 광고주 정산용은 '부가세 제외'입니다">
         <option value="ex" selected>부가세 제외(정산)</option>
         <option value="in">부가세 포함</option>
@@ -3705,6 +3706,34 @@ async function exportSaBrandReports() {
     throw err;
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = "📑 브랜드별 리포트"; }
+  }
+}
+
+// ADvoost 는 브랜드 구분 없이 통합 정산하므로, 브랜드별 리포트에 섞지 않고 따로 낸다.
+// 브랜드별 리포트 버튼은 브랜드 필터가 "전체"일 때만 ADvoost 통합본을 끼워 주기 때문에,
+// 특정 브랜드를 골라 뽑는 평소 정산 흐름에서는 ADvoost 가 아예 안 나왔다(2026-11-09).
+// 이 버튼은 브랜드 필터와 무관하게 언제나 기간 전체의 ADvoost 통합본 1부를 만든다.
+async function exportAdvoostReport() {
+  if (typeof ExcelJS === "undefined") { gToast("⚠️ 엑셀 모듈을 불러오지 못했습니다"); return; }
+  const btn = document.getElementById("advBtn");
+  if (btn) { btn.disabled = true; btn.textContent = "⏳ 생성 중…"; }
+  try {
+    const wb = saBuildAdvoostWorkbook();
+    if (!wb) { gToast("⚠️ 선택한 기간에 ADvoost 데이터가 없습니다"); return; }
+    const ym = STATE.to.slice(0, 7).replace("-", ".");
+    const buf = await wb.xlsx.writeBuffer();
+    const fname = `네이버_ADvoost Report Monthly_아모레퍼시픽(통합)_${ym}.xlsx`;
+    const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = fname; document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+    gToast(`✅ ADvoost 리포트 생성 · 시트 ${wb.worksheets.length}개 · ${(buf.byteLength / 1048576).toFixed(1)}MB`);
+  } catch (err) {
+    gToast("⚠️ ADvoost 리포트 실패: " + err.message);
+    throw err;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "🚀 ADvoost 리포트"; }
   }
 }
 
