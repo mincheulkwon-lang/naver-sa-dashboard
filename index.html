@@ -2285,6 +2285,19 @@ async function onFilesInner(fileList) {
   const _pidMap = (batch.indexMap || batch.productMaster)
     ? buildProductById(batch.indexMap || DB.indexMapRaw, batch.productMaster || DB.productMasterRaw)
     : DB.productByIdId;
+  // ⚠️ 인덱스가 로드되기 전에 파일을 끌어놓으면 브랜드가 하나도 안 붙어 전부 "미분류"로 접힌다.
+  // 그대로 저장되면 원본 광고그룹이 사라져 되돌릴 수 없다 — 2026-11-09 실측: 대시보드에 데이터가
+  // 아직 안 뜬 상태에서 지면별 10/20을 올려, 713행이 "미분류" 6행(캠페인유형×매체 조합 수)으로
+  // 굳었다. 집계 전에 막고, 기다렸다 다시 올리게 한다.
+  const _idxSize = _idxByKey ? Object.keys(_idxByKey).length : 0;
+  if (!_idxSize && (batch.gender || batch.age || batch.placement)) {
+    const list0 = document.getElementById("uploadList");
+    if (list0) list0.innerHTML = msgs.map(m => `<div>${escH(m)}</div>`).join("");
+    upShow(upBar(100, "⛔ 인덱스가 아직 로드되지 않았습니다",
+      "성별·연령·지면 파일은 광고그룹→브랜드 매핑이 있어야 저장할 수 있습니다. 지금 올리면 전부 '미분류'로 굳어 되돌릴 수 없습니다.\n대시보드 숫자가 다 뜬 뒤에 다시 올리거나, 인덱스.xlsx를 같이 올려주세요."), "err");
+    gToast("⛔ 인덱스 미로드 — 저장하지 않았습니다");
+    return;
+  }
   if (batch.gender) { const n0 = batch.gender.length; batch.gender = aggregateToBrand(batch.gender, "gender", _idxByKey, _pidMap); msgs.push(`↳ 성별 브랜드집계 ${n0.toLocaleString()}→${batch.gender.length.toLocaleString()}행`); }
   if (batch.age) { const n0 = batch.age.length; batch.age = aggregateToBrand(batch.age, "ageBand", _idxByKey, _pidMap); msgs.push(`↳ 연령 브랜드집계 ${n0.toLocaleString()}→${batch.age.length.toLocaleString()}행`); }
   if (batch.placement) { const n0 = batch.placement.length; batch.placement = aggregateToBrand(batch.placement, "media", _idxByKey, _pidMap); msgs.push(`↳ 지면 브랜드집계 ${n0.toLocaleString()}→${batch.placement.length.toLocaleString()}행`); }
