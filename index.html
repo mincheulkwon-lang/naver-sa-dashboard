@@ -2233,13 +2233,27 @@ async function onFilesInner(fileList) {
           msgs.push("⚠️ " + file.name + ": 인식 불가"); continue;
         }
         const meta = extractMeta(titleLine);
-        if (meta) { periods[kind] = meta; if (meta.mediaNo !== MEDIA_NO) mediaMismatch = true; }
+        // 같은 종류 파일을 여러 개 끌어놓으면 기간도 합쳐야 한다(앞 파일 10/19, 뒤 파일 10/20 식).
+        if (meta) {
+          const p0 = periods[kind];
+          periods[kind] = p0
+            ? { name: p0.name, frm: p0.frm < meta.frm ? p0.frm : meta.frm, to: p0.to > meta.to ? p0.to : meta.to, mediaNo: meta.mediaNo }
+            : meta;
+          if (meta.mediaNo !== MEDIA_NO) mediaMismatch = true;
+        }
         const parsed = Papa.parse(rest, { header: true, skipEmptyLines: true });
         const rows = parsed.data;
         const parseMap = { DAILY: parseDaily, GENDER: parseGender, AGE: parseAge, KEYWORD: parseKeyword, AD_MATERIAL: parseAdMaterial, SHOPPING_QUERY: parseShoppingQuery, PLACEMENT: parsePlacement };
         const outKey = { DAILY: "daily", GENDER: "gender", AGE: "age", KEYWORD: "keyword", AD_MATERIAL: "adMaterial", SHOPPING_QUERY: "shoppingQuery", PLACEMENT: "placement" }[kind];
-        batch[outKey] = parseMap[kind](rows);
-        msgs.push("✅ " + kind + " " + rows.length.toLocaleString() + "행");
+        // ⚠️ 예전에는 batch[outKey] = ... 로 덮어써서, 같은 종류 파일을 두 개 끌어놓으면
+        // 마지막 것만 남고 앞엣것이 조용히 사라졌다. ✅ 메시지는 두 번 다 떠서 다 올라간 줄
+        // 알게 된다 — 2026-11-09 실측: 검색어 2개(4,340행 + 7,773행)를 같이 올렸는데 실제로는
+        // 한 파일분만 시트에 들어갔다. 이어붙여서 전부 보낸다(서버는 자연키 upsert라 안전).
+        const got = parseMap[kind](rows);
+        const prevRows = batch[outKey];
+        batch[outKey] = prevRows ? prevRows.concat(got) : got;
+        msgs.push("✅ " + kind + " " + rows.length.toLocaleString() + "행"
+          + (prevRows ? " → 같은 종류 누적 " + batch[outKey].length.toLocaleString() + "행" : ""));
       }
     } catch (err) { msgs.push("⚠️ " + file.name + " 실패: " + err.message); }
   }
